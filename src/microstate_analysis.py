@@ -7,7 +7,7 @@ from scipy.signal import find_peaks
 from neurokit2.stats.cluster_quality import _cluster_quality_gev
 from sklearn.metrics import silhouette_score
 from sklearn.cluster import KMeans
-
+from plot_utils import plot_gfp
 
 def extract_peaks(
     subject,
@@ -56,6 +56,8 @@ def extract_peaks(
     # Create a directory for the subject's results
     subject_save_dir = os.path.join(save_dir, f"sub-{subject}")
     os.makedirs(subject_save_dir, exist_ok=True)
+    gfp_dir = os.path.join(save_dir, "gfp_plots")
+    os.makedirs(gfp_dir, exist_ok=True)
 
     all_selected_data = []
     session_limits = {}  # To store session start and end indices
@@ -129,6 +131,10 @@ def extract_peaks(
 
             # Find GFP peaks for the entire acquisition
             peaks, _ = find_peaks(gfp, distance=peak_distance)
+
+            # Plot and save the GFP with peaks
+            plot_gfp(gfp, peaks, subject, session, gfp_dir)
+
             print(f"Acquisition {first_acq}: found {len(peaks)} peaks before selection.")
             # Select the top `n_peaks` GFP peaks if specified
             if n_peaks is not None and len(peaks) > n_peaks:
