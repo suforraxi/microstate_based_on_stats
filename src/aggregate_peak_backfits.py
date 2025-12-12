@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 import numpy as np
-from scipy.stats import zscore
+from scipy.stats import zscore, ttest_ind
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
 from statsmodels.stats.anova import AnovaRM
 
@@ -174,7 +174,7 @@ def aggregate_microstate_occurrences(backfit_dir, n_microstates):
 
     return aggregated_df
 
-def process_microstate_results(base_folder):
+def process_microstate_results_Fstat(base_folder):
     """
     Process microstate results for a given base directory.
     Extract occurrences, compute z-scores, perform repeated measures ANOVA,
@@ -234,10 +234,85 @@ def process_microstate_results(base_folder):
     final_anova_results_df.to_csv(final_output_csv, index=False)
     print(f"Final aggregated ANOVA results saved to {final_output_csv}")
 
+def process_microstate_results_ttest(base_folder, case_ctrl):
+    """
+    Process microstate results for a given base directory.
+    Extract occurrences, perform t-tests for two independent groups,
+    and aggregate results across different numbers of microstates.
+
+    Parameters:
+    ----------
+    base_folder : str
+        The base directory containing the backfitted microstates folders.
+    case_ctrl : str
+        File .csv containing the two groups for t-tests
+    """
+    # Read the case-control participant file
+    participants_df = pd.read_csv(case_ctrl, sep='\t')
+    # Transform the 'sub' column in participants_df to match the format in aggregated_df
+    participants_df['sub'] = participants_df['participant_id'].apply(lambda x: int(x.split('-')[-1]))
+
+    # Initialize a list to store the aggregated t-test results
+    all_ttest_results = []
+
+    # Loop through all *_backfitted_microstates folders
+    for folder_name in os.listdir(base_folder):
+        if folder_name.endswith("_backfitted_microstates"):
+            # Define the path to the current backfitted microstates folder
+            backfit_dir = os.path.join(base_folder, folder_name)
+
+            # Extract the number of microstates from the folder name (e.g., "3" from "3_backfitted_microstates")
+            n_microstates = int(folder_name.split("_")[0])
+
+            print(f"Processing folder: {folder_name} (n_microstates = {n_microstates})")
+
+            # Aggregate microstate occurrences
+            aggregated_df = aggregate_microstate_occurrences(backfit_dir, n_microstates)
+
+           # Save the aggregated DataFrame to a CSV file
+            output_csv = os.path.join(backfit_dir, 'combined', "aggregated_microstate_occurrences.csv")
+            os.makedirs(os.path.dirname(output_csv), exist_ok=True)
+            aggregated_df.to_csv(output_csv, index=False)
+            print(f"Aggregated occurrences saved to {output_csv}")
+
+            # Perform t-tests for each microstate
+            for microstate in aggregated_df['Microstate'].unique():
+                print(f"Performing t-test for Microstate {microstate}...")
+
+                # Filter data for the current microstate
+                microstate_data = aggregated_df[aggregated_df['Microstate'] == microstate]
+
+                # Merge with participants_df to get group information
+                microstate_data = microstate_data.merge(participants_df, left_on='sub', right_on='sub')
+
+                # Split data into two groups based on 'case_ctrl'
+                group1 = microstate_data[microstate_data['case_ctrl'] == 0]['Occurrences']
+                group2 = microstate_data[microstate_data['case_ctrl'] == 1]['Occurrences']
+
+                # Perform t-test
+                t_stat, p_value = ttest_ind(group1, group2, equal_var=False)
+
+                # Append the results to the list
+                all_ttest_results.append({
+                    'Microstate': microstate,
+                    'T-Statistic': t_stat,
+                    'p-value': p_value,
+                    'N_Microstate': n_microstates
+                })
+
+    # Combine all t-test results into a single DataFrame
+    final_ttest_results_df = pd.DataFrame(all_ttest_results)
+
+    # Save the final aggregated t-test results to a CSV file in the base directory
+    final_output_csv = os.path.join(base_folder, "final_t_results.csv")
+    final_ttest_results_df.to_csv(final_output_csv, index=False)
+    print(f"Final aggregated t-test results saved to {final_output_csv}")
+
 
 if __name__ == "__main__":
     # Define the base directory containing the backfitted microstates folders
     base_dir = "./reports/microstate_results/24_1000_after_peaks_test/"
 
     # Call the function to process microstate results
-    process_microstate_results(base_dir)
+    process_microstate_results_Fstat(base_dir)
+    process_microstate_results_ttest(base_dir)

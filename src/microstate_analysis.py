@@ -255,7 +255,7 @@ def concatenate_peaks(
     return reordered_save_path
 
 
-def segment_microstates(
+def segment_microstates_peaks(
     concatenated_file,
     save_dir,
     n_microstates=10,
@@ -323,7 +323,7 @@ def segment_microstates(
     print(f"Microstate results saved to {results_path}")
 
 
-def backfit_microstates(
+def backfit_microstates_peaks(
     microstate_maps,
     subject_file,
     save_dir
