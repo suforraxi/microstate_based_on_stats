@@ -3,7 +3,7 @@ setuptools
 pandas
 matplotlib
 scipy
-sklearn
+scikit-learn
 statsmodels
 mne
 neurokit2

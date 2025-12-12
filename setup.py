@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="microstate_based_on_stats",
+    name="micros_based_on_stats",
     version="0.0.1",
     author="Matteo Demuru",
     author_email="suforraxi@gmail.com",
@@ -17,15 +17,14 @@ setup(
     ],
     python_requires=">=3.6",
     install_requires=[
-                "numpy"
+                "numpy",
                 "setuptools",
                 "pandas",
                 "matplotlib",
                 "scipy",
-                "sklearn",
+                "scikit-learn",
                 "statsmodels",
                 "mne",
-                "glob",
                 "neurokit2"
     ]
 )
