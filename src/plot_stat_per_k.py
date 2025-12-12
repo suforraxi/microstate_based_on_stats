@@ -227,10 +227,9 @@ def plot_microstate_Tstatistics(base_folder, alpha=0.05):
     file_path = os.path.join(base_folder, "final_t_results.csv")
     df = pd.read_csv(file_path)
 
-    # Compute the maximum T value for each N_Microstate
-    summary_df = df.groupby("N_Microstate").agg(
-        max_T=("T-Statistic", "max")
-    ).reset_index()
+    # Compute the maximum absolute T value for each N_Microstate, but save the original value
+    summary_df = df.loc[df.groupby("N_Microstate")['T-Statistic'].apply(lambda x: abs(x).idxmax())]
+    summary_df = summary_df[['N_Microstate', 'T-Statistic']].rename(columns={'T-Statistic': 'max_T'})
 
     # Apply Bonferroni correction and count significant states
     df["Bonferroni_p"] = alpha / df["N_Microstate"]  # Adjust p-values using Bonferroni correction
@@ -265,6 +264,11 @@ def plot_microstate_Tstatistics(base_folder, alpha=0.05):
     plt.title("Maximum T-Values across different number of microstates", fontsize=14)
     plt.legend(fontsize=10)
     plt.grid(alpha=0.3)
+
+    # Set x-ticks to integer values from 0 to max N_Microstate + 2 and rotate them by 45 degrees
+    max_n_microstate = summary_df["N_Microstate"].max()
+    plt.xticks(np.arange(0, max_n_microstate + 3, step=1), rotation=45)
+
     output_path_max_t = os.path.join(base_folder, "Max_T_Values_Plot.png")
     plt.tight_layout()
     plt.savefig(output_path_max_t, dpi=300)
