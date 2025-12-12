@@ -1,5 +1,5 @@
-from plot_stat_per_k import plot_microstate_Fstatistics
-from aggregate_peak_backfits import process_microstate_results_Fstat
+from .plot_stat_per_k import plot_microstate_Fstatistics
+from .aggregate_peak_backfits import process_microstate_results_Fstat
 
 
 if __name__ == "__main__":

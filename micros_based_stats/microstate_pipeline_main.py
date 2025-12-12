@@ -1,5 +1,5 @@
 import os
-from microstate_analysis import (extract_peaks,
+from .microstate_analysis import (extract_peaks,
                                  concatenate_peaks,
                                  segment_microstates_peaks,
                                  backfit_microstates_peaks

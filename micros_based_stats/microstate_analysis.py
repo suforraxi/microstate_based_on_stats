@@ -7,7 +7,7 @@ from scipy.signal import find_peaks
 from neurokit2.stats.cluster_quality import _cluster_quality_gev
 from sklearn.metrics import silhouette_score
 from sklearn.cluster import KMeans
-from plot_utils import plot_gfp
+from .plot_utils import plot_gfp
 
 def extract_peaks(
     subject,
