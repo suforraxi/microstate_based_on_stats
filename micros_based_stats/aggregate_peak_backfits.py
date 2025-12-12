@@ -309,10 +309,3 @@ def process_microstate_results_ttest(base_folder, case_ctrl):
     print(f"Final aggregated t-test results saved to {final_output_csv}")
 
 
-if __name__ == "__main__":
-    # Define the base directory containing the backfitted microstates folders
-    base_dir = "./reports/microstate_results/24_1000_after_peaks_test/"
-
-    # Call the function to process microstate results
-    process_microstate_results_Fstat(base_dir)
-    process_microstate_results_ttest(base_dir)
