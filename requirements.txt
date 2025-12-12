@@ -1,0 +1,9 @@
+numpy
+setuptools
+pandas
+matplotlib
+scipy
+sklearn
+statsmodels
+mne
+neurokit2
