@@ -19,7 +19,6 @@ setup(
     install_requires=[
                 "numpy"
                 "setuptools",
-                "os",
                 "pandas",
                 "matplotlib",
                 "scipy",
