@@ -102,8 +102,9 @@ def plot_microstate_Fstatistics(base_folder, alpha=0.05):
     df["Bonferroni_p"] = alpha / df["N_Microstate"]  # Adjust p-values using Bonferroni correction
     df["Significant_Bonferroni"] = df['p-value'] < df["Bonferroni_p"]  # Determine significance after correction
 
-    df = df.groupby("N_Microstate").apply(apply_fdr_correction).reset_index(drop=True)  # Reset index to avoid ambiguity
-
+    # Update the groupby operation to exclude grouping columns explicitly
+    df = df.groupby("N_Microstate", group_keys=False).apply(apply_fdr_correction).reset_index(drop=True)  # Reset index to avoid ambiguity
+    
     # Count the number of significant states for each N_Microstate
     significance_summary = df.groupby("N_Microstate")["Significant_FDR"].sum().reset_index()
     significance_summary.rename(columns={"Significant_FDR": "Num_Significant_States_FDR"}, inplace=True)
@@ -235,8 +236,10 @@ def plot_microstate_Tstatistics(base_folder, alpha=0.05):
     df["Bonferroni_p"] = alpha / df["N_Microstate"]  # Adjust p-values using Bonferroni correction
     df["Significant_Bonferroni"] = df['p-value'] < df["Bonferroni_p"]  # Determine significance after correction
 
-    df = df.groupby("N_Microstate").apply(apply_fdr_correction).reset_index(drop=True)  # Reset index to avoid ambiguity
-
+    #df = df.groupby("N_Microstate").apply(apply_fdr_correction).reset_index(drop=True)  # Reset index to avoid ambiguity
+    # Exclude grouping columns explicitly during the groupby operation
+    df = df.groupby("N_Microstate", group_keys=False).apply(
+            lambda group: apply_fdr_correction(group)).reset_index(drop=True)
     # Count the number of significant states for each N_Microstate
     significance_summary = df.groupby("N_Microstate")["Significant_FDR"].sum().reset_index()
     significance_summary.rename(columns={"Significant_FDR": "Num_Significant_States_FDR"}, inplace=True)
@@ -264,6 +267,11 @@ def plot_microstate_Tstatistics(base_folder, alpha=0.05):
     plt.title("Maximum T-Values across different number of microstates", fontsize=14)
     plt.legend(fontsize=10)
     plt.grid(alpha=0.3)
+
+    # Highlight the maximum T value(s) with a red point
+    max_t_abs = summary_df['max_T'].abs().max()
+    max_t_points = summary_df[summary_df['max_T'].abs() == max_t_abs]
+    plt.scatter(max_t_points['N_Microstate'], max_t_points['max_T'], color='red', label='Max T (highlighted)', zorder=5)
 
     # Set x-ticks to integer values from 0 to max N_Microstate + 2 and rotate them by 45 degrees
     max_n_microstate = summary_df["N_Microstate"].max()
