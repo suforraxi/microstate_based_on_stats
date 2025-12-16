@@ -202,8 +202,8 @@ def process_microstate_results_Fstat(base_folder):
             # Aggregate microstate occurrences
             aggregated_df = aggregate_microstate_occurrences(backfit_dir, n_microstates)
 
-            # Compute z-scores for the 'Occurrences' column grouped by 'sub' and 'Session'
-            aggregated_df['Occurrences_zscore'] = aggregated_df.groupby(['sub'])['Occurrences'].transform(lambda x: zscore(x, ddof=0))
+            # Compute z-scores for the 'Occurrences' column grouped by 'sub' and 'Microstate'
+            aggregated_df['Occurrences_zscore'] = aggregated_df.groupby(['sub', 'Microstate'])['Occurrences'].transform(lambda x: zscore(x, ddof=0))
 
             # Save the aggregated DataFrame to a CSV file
             output_csv = os.path.join(backfit_dir, 'combined', "aggregated_microstate_occurrences.csv")
@@ -269,7 +269,10 @@ def process_microstate_results_ttest(base_folder, case_ctrl):
             # Aggregate microstate occurrences
             aggregated_df = aggregate_microstate_occurrences(backfit_dir, n_microstates)
 
-           # Save the aggregated DataFrame to a CSV file
+            # Compute z-scores for the 'Occurrences' column grouped by 'sub' and 'Microstate'
+            aggregated_df['Occurrences_zscore'] = aggregated_df.groupby(['sub'])['Occurrences'].transform(lambda x: zscore(x, ddof=0))
+
+            # Save the aggregated DataFrame to a CSV file
             output_csv = os.path.join(backfit_dir, 'combined', "aggregated_microstate_occurrences.csv")
             os.makedirs(os.path.dirname(output_csv), exist_ok=True)
             aggregated_df.to_csv(output_csv, index=False)
@@ -288,7 +291,7 @@ def process_microstate_results_ttest(base_folder, case_ctrl):
                 # Split data into two groups based on 'case_ctrl'
                 group1 = microstate_data[microstate_data['case_ctrl'] == 0]['Occurrences']
                 group2 = microstate_data[microstate_data['case_ctrl'] == 1]['Occurrences']
-
+                
                 # Perform t-test
                 t_stat, p_value = ttest_ind(group1, group2, equal_var=False)
 

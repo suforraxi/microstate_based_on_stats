@@ -9,11 +9,11 @@ import numpy as np
 
 if __name__ == "__main__":
     # Define constants and directories
-    n_subjects = 4 # change according to your dataset
+    n_subjects = 50 # change according to your dataset
     subject_list = [f"{i:02d}" for i in range(1, n_subjects+1)]  # Subject IDs from '01'
     # bids root directory
-    bids_root = '/Users/matte/Desktop/Naples_data/bids_ms' 
-    n_peaks = 2000  # Number of GFP peaks to select from each acquisition of session of each subject
+    bids_root = '/Volumes/CrucialX6/matteo/bids_ms' 
+    n_peaks = 3000  # Number of GFP peaks to select from each acquisition of session of each subject
     peak_distance = 10  # Minimum distance between peaks in samples
     method = 'kmod'  # Specify the clustering method (e.g., 'kmeans', 'pca')
     minlenE = 2048  # Minimum number of time points required for a run to be included
@@ -22,9 +22,9 @@ if __name__ == "__main__":
     smoothing_window = 5
     sampling_rate = 1024
     start_microstates = 2
-    end_microstates = 5
+    end_microstates = 50
     # output directory
-    base_output_dir = '/Users/matte/Desktop/Naples_data/bids_ms/derivatives/microstate_analysis/'
+    base_output_dir = '/Volumes/CrucialX6/matteo/bids_ms/derivatives/microstate_analysis/3000_peaks'
     if not os.path.exists(base_output_dir):
         os.makedirs(base_output_dir)
     # Define sessions
