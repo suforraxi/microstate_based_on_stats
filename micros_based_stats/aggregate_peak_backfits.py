@@ -203,7 +203,12 @@ def process_microstate_results_Fstat(base_folder):
             aggregated_df = aggregate_microstate_occurrences(backfit_dir, n_microstates)
 
             # Compute z-scores for the 'Occurrences' column grouped by 'sub' and 'Microstate'
-            aggregated_df['Occurrences_zscore'] = aggregated_df.groupby(['sub', 'Microstate'])['Occurrences'].transform(lambda x: zscore(x, ddof=0))
+            def custom_zscore(series):
+                mean = series.mean()
+                std = series.std(ddof=0)
+                return (series - mean) / std if std != 0 else 0
+
+            aggregated_df['Occurrences_zscore'] = aggregated_df.groupby(['sub', 'Microstate'])['Occurrences'].transform(custom_zscore)
 
             # Save the aggregated DataFrame to a CSV file
             output_csv = os.path.join(backfit_dir, 'combined', "aggregated_microstate_occurrences.csv")
