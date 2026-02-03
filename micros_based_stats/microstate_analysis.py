@@ -7,7 +7,7 @@ from scipy.signal import find_peaks
 from neurokit2.stats.cluster_quality import _cluster_quality_gev
 from sklearn.metrics import silhouette_score
 from sklearn.cluster import KMeans
-from .plot_utils import plot_gfp
+from micros_based_stats.plot_utils import plot_gfp
 
 def extract_peaks(
     subject,
@@ -123,7 +123,10 @@ def extract_peaks(
             acq_data_abs = np.abs(acq_data_z)
 
             # Compute GFP for the current acquisition
-            gfp = np.std(acq_data_z, axis=0)
+            # gfp = np.std(acq_data_z, axis=0)
+            # with absolute values
+            print (f"Computing GFP for acquisition {first_acq} with abs...")
+            gfp = np.std(acq_data_abs, axis=0)
 
             # Apply smoothing to the GFP signal if specified
             if smoothing_window is not None and smoothing_window > 1:
@@ -365,7 +368,8 @@ def backfit_microstates_peaks(
     backfitted_labels = np.zeros(peaks_matrix.shape[1], dtype=int)
 
     # Perform backfitting for each peak
-    activation = microstate_maps.dot(peaks_matrix)
+    peaks_matrix = peaks_matrix / np.linalg.norm(peaks_matrix, axis=0) # normilize peaks
+    activation = microstate_maps.dot(peaks_matrix)  # shape: (n_microstates, n_peaks)
     backfitted_labels = np.argmax(np.abs(activation), axis=0)
     # Save the backfitted labels and session limits
     subject_id = os.path.basename(subject_file).split('-')[1].split('.')[0] # Extract subject ID from filename
