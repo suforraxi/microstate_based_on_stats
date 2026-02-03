@@ -102,9 +102,10 @@ def plot_microstate_Fstatistics(base_folder, alpha=0.05):
     df["Bonferroni_p"] = alpha / df["N_Microstate"]  # Adjust p-values using Bonferroni correction
     df["Significant_Bonferroni"] = df['p-value'] < df["Bonferroni_p"]  # Determine significance after correction
 
-    # Update the groupby operation to exclude grouping columns explicitly
-    df = df.groupby("N_Microstate", group_keys=False).apply(apply_fdr_correction).reset_index(drop=True)  # Reset index to avoid ambiguity
-    
+    # Update the groupby operation to retain the 'N_Microstate' column
+    df = df.groupby("N_Microstate", group_keys=False).apply(
+        lambda group: apply_fdr_correction(group).assign(N_Microstate=group.name)
+    ).reset_index(drop=True)
     # Count the number of significant states for each N_Microstate
     significance_summary = df.groupby("N_Microstate")["Significant_FDR"].sum().reset_index()
     significance_summary.rename(columns={"Significant_FDR": "Num_Significant_States_FDR"}, inplace=True)
