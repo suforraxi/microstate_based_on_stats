@@ -186,7 +186,7 @@ def concatenate_peaks(
     subject_list,
     input_dir,
     save_dir,
-    sessions=['01', '02', '03']
+    sessions=['01']
 ):
     """
     Concatenate peak matrices from all subjects, reorder by session, and save the concatenated matrix.
