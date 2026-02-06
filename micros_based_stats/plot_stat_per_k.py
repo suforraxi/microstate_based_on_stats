@@ -240,7 +240,8 @@ def plot_microstate_Tstatistics(base_folder, alpha=0.05):
     #df = df.groupby("N_Microstate").apply(apply_fdr_correction).reset_index(drop=True)  # Reset index to avoid ambiguity
     # Exclude grouping columns explicitly during the groupby operation
     df = df.groupby("N_Microstate", group_keys=False).apply(
-            lambda group: apply_fdr_correction(group)).reset_index(drop=True)
+            lambda group: apply_fdr_correction(group).assign(N_Microstate=group.name)
+    ).reset_index(drop=True)
     # Count the number of significant states for each N_Microstate
     significance_summary = df.groupby("N_Microstate")["Significant_FDR"].sum().reset_index()
     significance_summary.rename(columns={"Significant_FDR": "Num_Significant_States_FDR"}, inplace=True)
