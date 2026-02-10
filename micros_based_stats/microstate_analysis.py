@@ -1,3 +1,4 @@
+import itertools
 import os
 import glob
 import mne
@@ -8,6 +9,7 @@ from neurokit2.stats.cluster_quality import _cluster_quality_gev
 from sklearn.metrics import silhouette_score
 from sklearn.cluster import KMeans
 from micros_based_stats.plot_utils import plot_gfp
+import pandas as pd
 
 def extract_peaks(
     subject,
@@ -120,7 +122,7 @@ def extract_peaks(
             acq_data_z = (acq_data_concat - mean) / std
 
             # Compute absolute value of z-scored data
-            acq_data_abs = np.abs(acq_data_z)
+            acq_data_abs = np.abs( acq_data_z )
 
             # Compute GFP for the current acquisition
             # gfp = np.std(acq_data_z, axis=0)
@@ -402,6 +404,130 @@ def backfit_microstates_peaks(
     print(f"Backfitted microstate labels saved to {backfit_save_path}")
 
 
+def backfit_microstates_data(
+    microstate_maps,
+    subject,
+    bids_root,
+    sessions,
+    l_freq=2,
+    h_freq=30,
+    min_run_length=2048,
+):
+
+    #subject_save_dir = os.path.join(save_dir, f"sub-{subject}")
+    #os.makedirs(subject_save_dir, exist_ok=True)
+
+    channel_names = None
+    sampling_rate = None
+    unique_microstates = range(microstate_maps.shape[0]) 
+    for session in sessions:
+        ses_dir = os.path.join(bids_root, f'sub-{subject}', f'ses-{session}', 'meg')
+        fif_files = sorted(glob.glob(os.path.join(ses_dir, f'sub-{subject}_ses-{session}_task-rest_acq-*_run-*_meg.fif')))
+
+        # Group runs by acquisition
+        acquisitions = {}
+        for fif_file in fif_files:
+            acq = fif_file.split('_acq-')[1].split('_')[0]  # Extract acquisition label
+            if acq not in acquisitions:
+                acquisitions[acq] = []
+            acquisitions[acq].append(fif_file)
+
+        # Process only the first acquisition
+        if acquisitions:
+            first_acq = list(acquisitions.keys())[0]  # Get the first acquisition
+            acq_files = acquisitions[first_acq]  # Get the files for the first acquisition
+
+            acq_data = []
+
+            for fif_file in acq_files:
+                raw = mne.io.read_raw_fif(fif_file, preload=True, verbose=False)
+
+                # Check if the run length meets the minimum requirement
+                if raw.n_times < min_run_length:
+                    print(f"Skipping run {fif_file} (length: {raw.n_times} < {min_run_length})")
+                    continue
+
+                # Apply bandpass filter if specified
+                if l_freq is not None or h_freq is not None:
+                    raw.filter(l_freq=l_freq, h_freq=h_freq, verbose=False)
+                data = raw.get_data()  # shape: (n_channels, n_times)
+                if channel_names is None:
+                    channel_names = raw.ch_names
+                if sampling_rate is None:
+                    sampling_rate = int(raw.info['sfreq'])
+
+                # Append data for the current run
+                acq_data.append(data)
+
+            # Concatenate data across all runs in the same acquisition
+            if len(acq_data) == 0:
+                continue  # Skip if no valid runs in this acquisition
+
+            acq_data_concat = np.concatenate(acq_data, axis=1)  # shape: (n_channels, total_n_times_acq)
+
+            # Compute z-score across the concatenated acquisition data
+            mean = np.mean(acq_data_concat, axis=1, keepdims=True)
+            std = np.std(acq_data_concat, axis=1, keepdims=True)
+            acq_data_z = []
+
+            backfitted_concat = []
+            dur_avg_d = {}
+            dur_std_d = {}
+            coverage_d = {}
+            dur_d = {}
+            
+            for i in unique_microstates:
+                dur_d[i] = []
+            for e, acq in enumerate(acq_data):
+                acq_z = (acq - mean) / std
+                acq_data_z.append(np.abs(acq_z))
+
+                # Initialize an array to store the backfitted microstate labels
+                backfitted_labels = np.zeros(acq_z.shape[1], dtype=int)
+
+                # Perform backfitting for each peak
+                acq_z = acq_z / np.linalg.norm(acq_z, axis=0)  # Normalize
+                activation = microstate_maps.dot(acq_z)  # shape: (n_microstates, n_peaks)
+                backfitted_labels = np.argmax(np.abs(activation), axis=0)
+                backfitted_concat.append(backfitted_labels)
+                # Append backfitted labels and GEV results to dictionaries
+                gev, gev_all = _cluster_quality_gev(
+                    acq_z.T,
+                    microstate_maps,
+                    backfitted_labels,
+                    n_clusters=microstate_maps.shape[0]
+                )
+                
+                for key, group in itertools.groupby(backfitted_labels):
+                    temp_list = list(group)
+                    coverage_d[key] = coverage_d.get(key, 0) + len(temp_list)
+                    dur_d[key].append(len(temp_list) / sampling_rate) # Duration in seconds
+            
+            for key in coverage_d:
+                coverage_d[key] = coverage_d.get(key, 0) / sampling_rate # Convert to seconds
+            
+            for key in dur_d:
+                temp = np.array(dur_d[key])
+                dur_avg_d[key] = dur_avg_d.get(key, 0) + np.mean(temp)
+                dur_std_d[key] = dur_std_d.get(key, 0) + temp.std()
+            # dur_avg_d
+            # Initialize micro_stat_epoch_df with specified columns
+            #unique_microstates = range(microstate_maps.shape[0])  # Assuming microstate_maps rows represent unique microstates
+
+        #column_names = ['sub', 'ses'] + [f'dur_{state}' for state in unique_microstates]
+        #micro_stat_epoch_df = pd.DataFrame(columns=column_names)  # Initialize an empty DataFrame with column names
+            #Update micro_stat_epoch_df with data
+        new_row = {
+                'sub': subject,
+                'ses': session,
+                **{f'dur_{state}': dur_avg_d.get(state, 0) for state in unique_microstates},
+                **{f'co_{state}': coverage_d.get(state, 0) for state in unique_microstates},
+        }
+
+        #micro_stat_epoch_df = pd.DataFrame([new_row])  # Create a DataFrame for the new row
+        return new_row
+        #save_path = os.path.join(save_dir, f"backfit_data_stat_microstates_sub-{subject}")
+        #micro_stat_epoch_df.to_csv(save_path + ".csv", index=False)
 
 
 def compute_gap_statistic(data, labels, n_clusters, random_state=42):
