@@ -530,6 +530,150 @@ def backfit_microstates_data(
         #micro_stat_epoch_df.to_csv(save_path + ".csv", index=False)
 
 
+def backfit_microstates_data_ts(
+        microstate_maps,
+        subject,
+        bids_root,
+        sessions,
+        l_freq=2,
+        h_freq=30,
+        n_peaks=None,
+        min_run_length=2048,
+        peak_distance=10,
+        smoothing_window=5,
+    ):
+
+    print(f"Extracting peaks for subject {subject}...")
+
+    channel_names = None
+    sampling_rate = None
+    unique_microstates = range(microstate_maps.shape[0]) 
+    
+    for session in sessions:
+        ses_dir = os.path.join(bids_root, f'sub-{subject}', f'ses-{session}', 'meg')
+        fif_files = sorted(glob.glob(os.path.join(ses_dir, f'sub-{subject}_ses-{session}_task-rest_acq-*_run-*_meg.fif')))
+
+        # Group runs by acquisition
+        acquisitions = {}
+        for fif_file in fif_files:
+            acq = fif_file.split('_acq-')[1].split('_')[0]  # Extract acquisition label
+            if acq not in acquisitions:
+                acquisitions[acq] = []
+            acquisitions[acq].append(fif_file)
+
+        # Process only the first acquisition
+        if acquisitions:
+            first_acq = list(acquisitions.keys())[0]  # Get the first acquisition
+            acq_files = acquisitions[first_acq]  # Get the files for the first acquisition
+
+            acq_data = []
+        #for acq, acq_files in acquisitions.items():
+        #    acq_data = []
+
+            for fif_file in acq_files:
+                raw = mne.io.read_raw_fif(fif_file, preload=True, verbose=False)
+
+                # Check if the run length meets the minimum requirement
+                if raw.n_times < min_run_length:
+                    print(f"Skipping run {fif_file} (length: {raw.n_times} < {min_run_length})")
+                    continue
+
+                # Apply bandpass filter if specified
+                if l_freq is not None or h_freq is not None:
+                    raw.filter(l_freq=l_freq, h_freq=h_freq, verbose=False)
+                data = raw.get_data()  # shape: (n_channels, n_times)
+                if channel_names is None:
+                    channel_names = raw.ch_names
+                if sampling_rate is None:
+                    sampling_rate = raw.info['sfreq']
+
+                # Append data for the current run
+                acq_data.append(data)
+
+            # Concatenate data across all runs in the same acquisition
+            if len(acq_data) == 0:
+                continue  # Skip if no valid runs in this acquisition
+            acq_data_concat = np.concatenate(acq_data, axis=1)  # shape: (n_channels, total_n_times_acq)
+
+            # Compute z-score across the concatenated acquisition data
+            mean = np.mean(acq_data_concat, axis=1, keepdims=True)
+            std = np.std(acq_data_concat, axis=1, keepdims=True)
+            acq_data_z = (acq_data_concat - mean) / std
+
+            # Compute absolute value of z-scored data
+            acq_data_abs = np.abs( acq_data_z )
+
+            # Compute GFP for the current acquisition
+            # gfp = np.std(acq_data_z, axis=0)
+            # with absolute values
+            print (f"Computing GFP for acquisition {first_acq} with abs...")
+            gfp = np.std(acq_data_abs, axis=0)
+
+            # Apply smoothing to the GFP signal if specified
+            if smoothing_window is not None and smoothing_window > 1:
+                gfp = np.convolve(gfp, np.ones(smoothing_window) / smoothing_window, mode='same')
+
+            # Find GFP peaks for the entire acquisition
+            peaks, _ = find_peaks(gfp, distance=peak_distance)
+
+            print(f"Acquisition {first_acq}: found {len(peaks)} peaks before selection.")
+            # Select the top `n_peaks` GFP peaks if specified
+            if n_peaks is not None and len(peaks) > n_peaks:
+                gfp_amplitudes = gfp[peaks]
+                top_peaks_indices = np.argsort(gfp_amplitudes)[-n_peaks:]
+                peaks = peaks[top_peaks_indices]
+
+            peaks = np.sort(peaks)
+            # Extract data corresponding to the peaks
+            backfitted_data = -1*np.ones(acq_data_abs.shape[1], dtype=int)
+            peak_data = acq_data_abs[:, peaks]
+            peak_data = peak_data/ np.linalg.norm(peak_data, axis=0)  # Normalize
+            activation = microstate_maps.dot(peak_data)  # shape: (n_microstates, n_peaks)
+            backfitted_peaks = np.argmax(np.abs(activation), axis=0)
+            backfitted_data[peaks] = backfitted_peaks
+            #peaks.insert(0, 0)  # Add the first time point as a "peak" to capture the initial state
+            #backfitted_data[0:peaks[0]] = backfitted_data[peaks[0]]  # Assign the first peak's microstate to the first time point
+            for i in range(len(peaks)-1):
+                j = i + 1
+                delta = (peaks[j] - peaks[i] -1)
+                if delta % 2 == 1:
+                    mid_point = peaks[i] + delta // 2 + 1
+                    backfitted_data[peaks[i]:mid_point+1] = backfitted_data[peaks[i]]
+                    backfitted_data[mid_point+1:peaks[j]] = backfitted_data[peaks[j]]
+                else:  # If there is a gap between peaks
+                    mid_point = peaks[i] + delta // 2
+                    backfitted_data[peaks[i]:mid_point+1] = backfitted_data[peaks[i]]
+                    backfitted_data[mid_point+1:peaks[j]] = backfitted_data[peaks[j]]
+
+            bf_data = backfitted_data[peaks[0]:peaks[-1]+1]
+             # Extract the backfitted data for the range of peaks
+            dur_avg_d = {}
+            dur_std_d = {}
+            coverage_d = {}
+            dur_d = {}
+            for i in unique_microstates:
+                dur_d[i] = []
+            for key, group in itertools.groupby(bf_data):
+                    temp_list = list(group)
+                    coverage_d[key] = coverage_d.get(key, 0) + len(temp_list)
+                    dur_d[key].append(len(temp_list) / sampling_rate) # Duration in seconds
+            
+            for key in coverage_d:
+                coverage_d[key] = coverage_d.get(key, 0) / sampling_rate # Convert to seconds
+            
+            for key in dur_d:
+                temp = np.array(dur_d[key])*1000
+                dur_avg_d[key] = dur_avg_d.get(key, 0) + np.mean(temp)
+                dur_std_d[key] = dur_std_d.get(key, 0) + temp.std()
+            
+        new_row = {
+            'sub': subject,
+            'ses': session,
+            **{f'dur_{state}': dur_avg_d.get(state, 0) for state in unique_microstates},
+            **{f'co_{state}': coverage_d.get(state, 0) for state in unique_microstates},
+        }
+        return new_row
+
 def compute_gap_statistic(data, labels, n_clusters, random_state=42):
     """
     Compute the gap statistic for clustering quality.
