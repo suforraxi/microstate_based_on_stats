@@ -420,6 +420,8 @@ def backfit_microstates_data(
     channel_names = None
     sampling_rate = None
     unique_microstates = range(microstate_maps.shape[0]) 
+    rows = []
+    print(f"{subject}----> backfitting microstates to data...")
     for session in sessions:
         ses_dir = os.path.join(bids_root, f'sub-{subject}', f'ses-{session}', 'meg')
         fif_files = sorted(glob.glob(os.path.join(ses_dir, f'sub-{subject}_ses-{session}_task-rest_acq-*_run-*_meg.fif')))
@@ -475,12 +477,12 @@ def backfit_microstates_data(
             dur_std_d = {}
             coverage_d = {}
             dur_d = {}
-            
             for i in unique_microstates:
                 dur_d[i] = []
+                coverage_d[i] = 0
             for e, acq in enumerate(acq_data):
-                acq_z = (acq - mean) / std
-                acq_data_z.append(np.abs(acq_z))
+                acq_z = np.abs((acq - mean) / std)
+                acq_data_z.append(acq_z)
 
                 # Initialize an array to store the backfitted microstate labels
                 backfitted_labels = np.zeros(acq_z.shape[1], dtype=int)
@@ -489,6 +491,7 @@ def backfit_microstates_data(
                 acq_z = acq_z / np.linalg.norm(acq_z, axis=0)  # Normalize
                 activation = microstate_maps.dot(acq_z)  # shape: (n_microstates, n_peaks)
                 backfitted_labels = np.argmax(np.abs(activation), axis=0)
+                print(f"epoch {e}: {len(np.unique(backfitted_labels))} unique microstates assigned")
                 backfitted_concat.append(backfitted_labels)
                 # Append backfitted labels and GEV results to dictionaries
                 gev, gev_all = _cluster_quality_gev(
@@ -502,14 +505,19 @@ def backfit_microstates_data(
                     temp_list = list(group)
                     coverage_d[key] = coverage_d.get(key, 0) + len(temp_list)
                     dur_d[key].append(len(temp_list) / sampling_rate) # Duration in seconds
-            
+
+            total_time = sum(coverage_d.values()) # Total time in seconds
             for key in coverage_d:
-                coverage_d[key] = coverage_d.get(key, 0) / sampling_rate # Convert to seconds
-            
+                coverage_d[key] = (coverage_d.get(key, 0)) / total_time * 100 # Normalize coverage by total time
+ 
             for key in dur_d:
-                temp = np.array(dur_d[key])
-                dur_avg_d[key] = dur_avg_d.get(key, 0) + np.mean(temp)
-                dur_std_d[key] = dur_std_d.get(key, 0) + temp.std()
+                if dur_d[key] != []:
+                    temp = np.array(dur_d[key]) * 1000
+                    dur_avg_d[key] = dur_avg_d.get(key, 0) + np.mean(temp)
+                    dur_std_d[key] = dur_std_d.get(key, 0) + temp.std()
+                else:
+                    dur_avg_d[key] = 0
+                    dur_std_d[key] = 0
             # dur_avg_d
             # Initialize micro_stat_epoch_df with specified columns
             #unique_microstates = range(microstate_maps.shape[0])  # Assuming microstate_maps rows represent unique microstates
@@ -518,14 +526,14 @@ def backfit_microstates_data(
         #micro_stat_epoch_df = pd.DataFrame(columns=column_names)  # Initialize an empty DataFrame with column names
             #Update micro_stat_epoch_df with data
         new_row = {
-                'sub': subject,
+                'sub': 'sub-'+subject,
                 'ses': session,
                 **{f'dur_{state}': dur_avg_d.get(state, 0) for state in unique_microstates},
                 **{f'co_{state}': coverage_d.get(state, 0) for state in unique_microstates},
         }
-
+        #rows.append(new_row)
         #micro_stat_epoch_df = pd.DataFrame([new_row])  # Create a DataFrame for the new row
-        return new_row
+    return new_row
         #save_path = os.path.join(save_dir, f"backfit_data_stat_microstates_sub-{subject}")
         #micro_stat_epoch_df.to_csv(save_path + ".csv", index=False)
 
@@ -548,7 +556,7 @@ def backfit_microstates_data_ts(
     channel_names = None
     sampling_rate = None
     unique_microstates = range(microstate_maps.shape[0]) 
-    
+    rows = []
     for session in sessions:
         ses_dir = os.path.join(bids_root, f'sub-{subject}', f'ses-{session}', 'meg')
         fif_files = sorted(glob.glob(os.path.join(ses_dir, f'sub-{subject}_ses-{session}_task-rest_acq-*_run-*_meg.fif')))
@@ -627,9 +635,12 @@ def backfit_microstates_data_ts(
             # Extract data corresponding to the peaks
             backfitted_data = -1*np.ones(acq_data_abs.shape[1], dtype=int)
             peak_data = acq_data_abs[:, peaks]
+            print(f"{subject}: {len(peaks)} number of peaks selected for backfitting")
+
             peak_data = peak_data/ np.linalg.norm(peak_data, axis=0)  # Normalize
             activation = microstate_maps.dot(peak_data)  # shape: (n_microstates, n_peaks)
             backfitted_peaks = np.argmax(np.abs(activation), axis=0)
+            print(f"{subject}: {len(np.unique(backfitted_peaks))} unique microstates assigned")
             backfitted_data[peaks] = backfitted_peaks
             #peaks.insert(0, 0)  # Add the first time point as a "peak" to capture the initial state
             #backfitted_data[0:peaks[0]] = backfitted_data[peaks[0]]  # Assign the first peak's microstate to the first time point
@@ -646,33 +657,54 @@ def backfit_microstates_data_ts(
                     backfitted_data[mid_point+1:peaks[j]] = backfitted_data[peaks[j]]
 
             bf_data = backfitted_data[peaks[0]:peaks[-1]+1]
+            
              # Extract the backfitted data for the range of peaks
             dur_avg_d = {}
             dur_std_d = {}
             coverage_d = {}
             dur_d = {}
+            peaks_d = {}
             for i in unique_microstates:
                 dur_d[i] = []
+                peaks_d[i] = 0
+                coverage_d[i] = 0
             for key, group in itertools.groupby(bf_data):
                     temp_list = list(group)
                     coverage_d[key] = coverage_d.get(key, 0) + len(temp_list)
                     dur_d[key].append(len(temp_list) / sampling_rate) # Duration in seconds
             
+            for key, group in itertools.groupby(backfitted_peaks):
+                temp_list = list(group)
+                peaks_d[key] = peaks_d.get(key, 0) + len(temp_list)
+            peak_avg = np.mean(list(peaks_d.values()))
+            peak_std = np.std(list(peaks_d.values()), ddof=0)  # Sample standard deviation
+            for key in peaks_d:
+                peaks_d[key] = (peaks_d.get(key, 0) - peak_avg) / peak_std  # Z-score normalization of peaks count
+                #peaks_d[key] = peaks_d.get(key, 0)
+            total_time = sum(coverage_d.values())  # Total time in seconds
             for key in coverage_d:
-                coverage_d[key] = coverage_d.get(key, 0) / sampling_rate # Convert to seconds
+                coverage_d[key] = (coverage_d.get(key, 0)) / total_time * 100 # Normalize coverage by total time
             
             for key in dur_d:
-                temp = np.array(dur_d[key])*1000
-                dur_avg_d[key] = dur_avg_d.get(key, 0) + np.mean(temp)
-                dur_std_d[key] = dur_std_d.get(key, 0) + temp.std()
+                if dur_d[key] != []:
+                    temp = np.array(dur_d[key])*1000
+                    dur_avg_d[key] = dur_avg_d.get(key, 0) + np.mean(temp)
+                    dur_std_d[key] = dur_std_d.get(key, 0) + temp.std()
+                else:
+                    dur_avg_d[key] =  0
+                    dur_std_d[key] =  0
+            
             
         new_row = {
-            'sub': subject,
+            'sub': 'sub-'+subject,
             'ses': session,
             **{f'dur_{state}': dur_avg_d.get(state, 0) for state in unique_microstates},
             **{f'co_{state}': coverage_d.get(state, 0) for state in unique_microstates},
+            **{f'peaks_{state}': peaks_d.get(state, 0) for state in unique_microstates},
         }
-        return new_row
+        #rows.append(new_row)
+    
+    return new_row
 
 def compute_gap_statistic(data, labels, n_clusters, random_state=42):
     """
