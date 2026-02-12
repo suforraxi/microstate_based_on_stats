@@ -294,8 +294,8 @@ def process_microstate_results_ttest(base_folder, case_ctrl):
                 microstate_data = microstate_data.merge(participants_df, left_on='sub', right_on='sub')
 
                 # Split data into two groups based on 'case_ctrl'
-                group1 = microstate_data[microstate_data['case_ctrl'] == 0]['Occurrences']
-                group2 = microstate_data[microstate_data['case_ctrl'] == 1]['Occurrences']
+                group1 = microstate_data[microstate_data['case_ctrl'] == 0]['Occurrences_zscore']
+                group2 = microstate_data[microstate_data['case_ctrl'] == 1]['Occurrences_zscore']
                 
                 # Perform t-test
                 t_stat, p_value = ttest_ind(group1, group2, equal_var=False)
@@ -315,5 +315,3 @@ def process_microstate_results_ttest(base_folder, case_ctrl):
     final_output_csv = os.path.join(base_folder, "final_t_results.csv")
     final_ttest_results_df.to_csv(final_output_csv, index=False)
     print(f"Final aggregated t-test results saved to {final_output_csv}")
-
-
