@@ -93,6 +93,7 @@ def map_microstate_to_aal(microstate_maps, selected_row, aal_atlas, th_percentil
         threshold=threshold_value,  # Disable threshold to show all values
         darkness=None
     )
+    plt.gcf().suptitle("", fontsize=24)  
     #plt.show()
 
     return mapped_aal_nii
