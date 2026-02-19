@@ -1,3 +1,31 @@
+"""
+This script provides functionality to map microstate data to the AAL (Automated Anatomical Labeling) atlas and visualize the results.
+
+Functions:
+
+1. map_microstate_to_aal(microstate_maps, selected_row, aal_atlas, th_percentile=50):
+   - Maps a selected row of microstate data to the AAL atlas and visualizes it.
+   - Parameters:
+     - microstate_maps: numpy array, the microstate maps matrix.
+     - selected_row: int, the row index of the microstate data to map.
+     - aal_atlas: dict, the AAL atlas fetched using nilearn.datasets.fetch_atlas_aal().
+     - th_percentile: int, optional, the threshold percentile for visualization.
+   - Returns:
+     - mapped_aal_nii: Nifti1Image, the mapped AAL atlas as a NIfTI image.
+
+2. plot_brains(file_maps, output_dir):
+   - Plots and saves brain images for each microstate map in the provided .npz file.
+   - Parameters:
+     - file_maps: str, path to the .npz file containing microstate maps.
+     - output_dir: str, directory where the output images will be saved.
+   - Saves:
+     - High-resolution images of the microstate maps mapped to the AAL atlas.
+
+Usage:
+- Use `plot_brains` to process a .npz file containing microstate maps and save the visualized brain images to the specified output directory.
+- The `map_microstate_to_aal` function is used internally to map and visualize each microstate map.
+"""
+
 from nilearn import datasets
 import nibabel as nib
 import matplotlib.pyplot as plt
@@ -12,8 +40,8 @@ def map_microstate_to_aal(microstate_maps, selected_row, aal_atlas, th_percentil
     Parameters:
     - microstate_maps: numpy array, the microstate maps matrix.
     - selected_row: int, the row index of the microstate data to map.
-    - my_aal_regions: list, list of AAL region names.
     - aal_atlas: dict, the AAL atlas fetched using nilearn.datasets.fetch_atlas_aal().
+    - th_percentile: int, optional, the threshold percentile for visualization.
 
     Returns:
     - mapped_aal_nii: Nifti1Image, the mapped AAL atlas as a NIfTI image.
@@ -100,6 +128,38 @@ def map_microstate_to_aal(microstate_maps, selected_row, aal_atlas, th_percentil
 
 
 def plot_brains(file_maps, output_dir):
+    """
+    Plot brain microstates using AAL atlas and save as images.
+    This function loads microstate maps from an .npz file, maps them to the 
+    Automated Anatomical Labeling (AAL) atlas, and saves visualizations as 
+    high-resolution PNG images.
+    Parameters
+    ----------
+    file_maps : str
+        Path to the .npz file containing microstate maps. The file must contain
+        a "Microstates" key with the microstate data array.
+    output_dir : str
+        Directory path where output PNG images will be saved. The directory 
+        will be created if it does not exist.
+    Returns
+    -------
+    None
+        Saves PNG images to the specified output directory.
+    Raises
+    ------
+    KeyError
+        If the "Microstates" key is not found in the .npz file.
+    Notes
+    -----
+    - Each microstate map is processed individually and saved as a separate image.
+    - Output images are saved with high resolution (600 DPI).
+    - Image filenames follow the pattern: microstate_map_XX.png (zero-padded index).
+    - Requires the nilearn datasets module for AAL atlas access.
+    Examples
+    --------
+    >>> plot_brains('/path/to/data.npz', '/path/to/output')
+    # Generates microstate_map_00.png, microstate_map_01.png, etc.
+    """
    
     os.makedirs(output_dir, exist_ok=True)
     # Path to the .npz file

@@ -1,0 +1,12 @@
+reports/microstate_results/*
+src/__pycache__/*
+reports/.DS_Store
+.DS_Store
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+.env
+*.egg-info/
+dist/
+build/

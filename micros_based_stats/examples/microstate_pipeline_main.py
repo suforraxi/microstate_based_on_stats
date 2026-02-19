@@ -12,7 +12,7 @@ if __name__ == "__main__":
     n_subjects = 50 # change according to your dataset
     subject_list = [f"{i:02d}" for i in range(1, n_subjects+1)]  # Subject IDs from '01'
     # bids root directory
-    bids_root = '/Volumes/CrucialX6/matteo/bids_ms' 
+    bids_root = './data/'  # Change this to your BIDS root directory
     n_peaks = 3000  # Number of GFP peaks to select from each acquisition of session of each subject
     peak_distance = 10  # Minimum distance between peaks in samples
     method = 'kmod'  # Specify the clustering method (e.g., 'kmeans', 'pca')
@@ -24,7 +24,7 @@ if __name__ == "__main__":
     start_microstates = 2
     end_microstates = 50
     # output directory
-    base_output_dir = '/Volumes/CrucialX6/matteo/bids_ms/derivatives/microstate_analysis/3000_peaks'
+    base_output_dir = './results/'  # Change this to your desired output directory'
     if not os.path.exists(base_output_dir):
         os.makedirs(base_output_dir)
     # Define sessions

@@ -3,7 +3,8 @@ from micros_based_stats.aggregate_peak_backfits import process_microstate_result
 
 
 if __name__ == "__main__":
-    base_folder = '/Users/matte/Desktop/Naples_data/bids_ms/derivatites/microstate_analysis/'
+    # Path to the folder where the F-statistics (between conditions) results for all the microstates are stored
+    base_folder = './results/'
 
     process_microstate_results_Fstat(base_folder=base_folder)
     plot_microstate_Fstatistics(base_folder=base_folder,alpha=0.5)
