@@ -247,7 +247,8 @@ def backfit_peaks(clustering_in_dir=None,
         data = np.load(peak_f)
         peaks = data['peak_data']  # Assuming you saved the peak data as 'peak_data'
         raw = mne.io.RawArray(peaks, infoStub)
-        segmentation = clustering.predict(raw, picks='all')
+        segmentation = clustering.predict(raw,
+                                          picks='all')
 
         unique, counts = np.unique(segmentation.labels, return_counts=True)
         for u, c in zip(unique, counts):
@@ -282,18 +283,19 @@ def ttest_microstate_visits(backfitted_peaks_in_dir=None,
     for f in backfit_f:
         c_df = pd.read_csv(f)
         c_df['sub'] = c_df['sub'].apply(lambda x: f"sub-{int(x):02d}")  # Ensure 'sub' is a zero-padded string
-        c_df['visits_z'] = c_df.groupby(['sub', 'ses'])['visits'].transform(
-            lambda x: (x - x.mean()) / x.std()
-        )
         # Remove microstate '-1' from all subjects
         c_df = c_df[c_df['microstate'] != -1]
+        c_df['visits_z'] = c_df.groupby(['sub', 'ses'])['visits'].transform(
+            lambda x: (x - x.mean()) / x.std() if x.std() != 0 else x - x.mean()
+        )
+        
         u_micro = c_df['microstate'].unique()
         for u_m in u_micro:
             micro_df = c_df[c_df['microstate'] == u_m]
             merged_df = pd.merge(micro_df, part_df, on='sub', how='left')
             # Perform t-test or any other statistical test here using merged_df
-            group1 = merged_df[merged_df['case_ctrl'] == 1]['visits_z']
-            group2 = merged_df[merged_df['case_ctrl'] == 0]['visits_z']
+            group1 = merged_df[merged_df['case_ctrl'] == 0]['visits_z']
+            group2 = merged_df[merged_df['case_ctrl'] == 1]['visits_z']
             t_stat, p_value = ttest_ind(group1, group2, equal_var=False)
             print(f"Microstate {u_m} - t-statistic: {t_stat}, p-value: {p_value}")  
             all_test_res.append({
@@ -542,12 +544,12 @@ def main_workflow():
     
     combine_peaks(peaks_dir=out_dir_peaks, 
                   base_out=base_output_dir)
-    
+    """
     # Step 3: Perform clustering
     file_stub='/Volumes/CrucialX6/matteo/bids_ms/derivatives/preprocessed_data/sub-01_ses-01_task-combined_raw.fif'
     raw = mne.io.read_raw_fif(file_stub, preload=True, verbose=False)
     infoStub = raw.info
-    n_microstates = list(range(2, 41))  # Change this to the desired number of microstates
+    n_microstates = list(range(17, 41))  # Change this to the desired number of microstates
     for n in n_microstates:
         perform_clustering(peaks_in_dir=out_dir_combined_peaks,
                         base_out_dir=base_output_dir, 
@@ -562,7 +564,7 @@ def main_workflow():
             base_out_dir=base_output_dir,
             infoStub=infoStub
         )
-    """
+
     backfitted_peaks_dir = os.path.join(base_output_dir, "backfitted_peaks")
     ttest_microstate_visits(backfitted_peaks_in_dir=backfitted_peaks_dir,
                             base_out_dir=base_output_dir,
