@@ -10,6 +10,9 @@ from sklearn.metrics import silhouette_score
 from sklearn.cluster import KMeans
 from micros_based_stats.plot_utils import plot_gfp
 import pandas as pd
+from pycrostates.io import ChData, read_cluster
+from pycrostates.cluster import ModKMeans
+
 
 def extract_peaks(
     subject,
@@ -21,7 +24,8 @@ def extract_peaks(
     n_peaks=None,
     min_run_length=2048,
     peak_distance=10,
-    smoothing_window=5
+    smoothing_window=5,
+    downsample=None
 ):
     """
     Extract GFP peaks for a subject across sessions and save the peaks matrix and session limits.
@@ -48,7 +52,8 @@ def extract_peaks(
         Minimum distance between peaks in samples.
     smoothing_window : int or None
         Size of the moving average window for smoothing GFP. If None, no smoothing is applied.
-
+    downsample : int or None
+        Downsampling frequency in Hz. If None, no downsampling is applied.
     Returns
     -------
     None
@@ -102,6 +107,8 @@ def extract_peaks(
                 # Apply bandpass filter if specified
                 if l_freq is not None or h_freq is not None:
                     raw.filter(l_freq=l_freq, h_freq=h_freq, verbose=False)
+                if downsample is not None:
+                    raw.resample(downsample, npad="auto")
                 data = raw.get_data()  # shape: (n_channels, n_times)
                 if channel_names is None:
                     channel_names = raw.ch_names
@@ -412,6 +419,7 @@ def backfit_microstates_data(
     l_freq=2,
     h_freq=30,
     min_run_length=2048,
+    downsample=None
 ):
 
     #subject_save_dir = os.path.join(save_dir, f"sub-{subject}")
@@ -452,6 +460,9 @@ def backfit_microstates_data(
                 # Apply bandpass filter if specified
                 if l_freq is not None or h_freq is not None:
                     raw.filter(l_freq=l_freq, h_freq=h_freq, verbose=False)
+                # Apply downsampling if specified
+                if downsample is not None:
+                    raw.resample(downsample, npad="auto")
                 data = raw.get_data()  # shape: (n_channels, n_times)
                 if channel_names is None:
                     channel_names = raw.ch_names
@@ -512,7 +523,7 @@ def backfit_microstates_data(
  
             for key in dur_d:
                 if dur_d[key] != []:
-                    temp = np.array(dur_d[key]) * 1000
+                    temp = np.array(dur_d[key]) * 1000 # Convert duration to milliseconds
                     dur_avg_d[key] = dur_avg_d.get(key, 0) + np.mean(temp)
                     dur_std_d[key] = dur_std_d.get(key, 0) + temp.std()
                 else:
@@ -549,6 +560,7 @@ def backfit_microstates_data_ts(
         min_run_length=2048,
         peak_distance=10,
         smoothing_window=5,
+        downsample=None
     ):
 
     print(f"Extracting peaks for subject {subject}...")
@@ -589,6 +601,9 @@ def backfit_microstates_data_ts(
                 # Apply bandpass filter if specified
                 if l_freq is not None or h_freq is not None:
                     raw.filter(l_freq=l_freq, h_freq=h_freq, verbose=False)
+                # Apply downsampling if specified
+                if downsample is not None:
+                    raw.resample(downsample, npad="auto")
                 data = raw.get_data()  # shape: (n_channels, n_times)
                 if channel_names is None:
                     channel_names = raw.ch_names
@@ -641,53 +656,73 @@ def backfit_microstates_data_ts(
             activation = microstate_maps.dot(peak_data)  # shape: (n_microstates, n_peaks)
             backfitted_peaks = np.argmax(np.abs(activation), axis=0)
             print(f"{subject}: {len(np.unique(backfitted_peaks))} unique microstates assigned")
-            backfitted_data[peaks] = backfitted_peaks
-            #peaks.insert(0, 0)  # Add the first time point as a "peak" to capture the initial state
-            #backfitted_data[0:peaks[0]] = backfitted_data[peaks[0]]  # Assign the first peak's microstate to the first time point
-            for i in range(len(peaks)-1):
-                j = i + 1
-                delta = (peaks[j] - peaks[i] -1)
-                if delta % 2 == 1:
-                    mid_point = peaks[i] + delta // 2 + 1
-                    backfitted_data[peaks[i]:mid_point+1] = backfitted_data[peaks[i]]
-                    backfitted_data[mid_point+1:peaks[j]] = backfitted_data[peaks[j]]
-                else:  # If there is a gap between peaks
-                    mid_point = peaks[i] + delta // 2
-                    backfitted_data[peaks[i]:mid_point+1] = backfitted_data[peaks[i]]
-                    backfitted_data[mid_point+1:peaks[j]] = backfitted_data[peaks[j]]
+           
 
-            bf_data = backfitted_data[peaks[0]:peaks[-1]+1]
-            
-             # Extract the backfitted data for the range of peaks
             dur_avg_d = {}
             dur_std_d = {}
             coverage_d = {}
             dur_d = {}
             peaks_d = {}
+
             for i in unique_microstates:
                 dur_d[i] = []
                 peaks_d[i] = 0
                 coverage_d[i] = 0
-            for key, group in itertools.groupby(bf_data):
-                    temp_list = list(group)
-                    coverage_d[key] = coverage_d.get(key, 0) + len(temp_list)
-                    dur_d[key].append(len(temp_list) / sampling_rate) # Duration in seconds
             
-            for key, group in itertools.groupby(backfitted_peaks):
-                temp_list = list(group)
-                peaks_d[key] = peaks_d.get(key, 0) + len(temp_list)
+            backfitted_data[peaks] = backfitted_peaks
+            backfitted_epoch = []
+            epoch_peaks = []
+            k = 0
+            for e in range(len(acq_data)):
+                    length  = acq_data[e].shape[1]
+                    backfitted_epoch.append(backfitted_data[k:k+length])
+                    epoch_peaks.append(np.argwhere(backfitted_epoch[e]!=-1).flatten())
+                    k= k + length
+                    for i in range(len(epoch_peaks[e])-1):
+                        j = i + 1
+                        delta = (epoch_peaks[e][j] - epoch_peaks[e][i] -1)
+                        if delta % 2 == 1:
+                            mid_point = epoch_peaks[e][i] + delta // 2 + 1
+                            backfitted_epoch[e][epoch_peaks[e][i]:mid_point+1] = backfitted_epoch[e][epoch_peaks[e][i]]
+                            backfitted_epoch[e][mid_point+1:epoch_peaks[e][j]] = backfitted_epoch[e][epoch_peaks[e][j]]
+                        else:  # If there is a gap between peaks
+                            mid_point = epoch_peaks[e][i] + delta // 2
+                            backfitted_epoch[e][epoch_peaks[e][i]:mid_point+1] = backfitted_epoch[e][epoch_peaks[e][i]]
+                            backfitted_epoch[e][mid_point+1:epoch_peaks[e][j]] = backfitted_epoch[e][epoch_peaks[e][j]]
+
+                    backfitted_epoch[e] = backfitted_epoch[e][epoch_peaks[e][0]:epoch_peaks[e][-1]+1]
+                    epoch_peaks[e] = epoch_peaks[e] - epoch_peaks[e][0]
+                
+                    # Extract the backfitted data for the range of peaks
+            
+                    for key, group in itertools.groupby(backfitted_epoch[e]):
+                            temp_list = list(group)
+                            coverage_d[key] = coverage_d.get(key, 0) + len(temp_list)
+                            dur_d[key].append(len(temp_list) / sampling_rate) # Duration in seconds
+                    """
+                    for key, group in itertools.groupby(backfitted_epoch[e][epoch_peaks[e]]):
+                        temp_list = list(group)
+                        peaks_d[key] = peaks_d.get(key, 0) + len(temp_list)
+                    """   
+                    curr_peaks = backfitted_epoch[e][epoch_peaks[e]]
+                    for m in unique_microstates:
+                        peaks_d[m] = peaks_d.get(m, 0) + np.sum(curr_peaks == m)
+
             peak_avg = np.mean(list(peaks_d.values()))
             peak_std = np.std(list(peaks_d.values()), ddof=0)  # Sample standard deviation
             for key in peaks_d:
                 peaks_d[key] = (peaks_d.get(key, 0) - peak_avg) / peak_std  # Z-score normalization of peaks count
                 #peaks_d[key] = peaks_d.get(key, 0)
+                #pass
+    
             total_time = sum(coverage_d.values())  # Total time in seconds
+            print(f"{subject} session {session}: total time = {total_time:.2f} samples, {total_time/sampling_rate:.2f} seconds")
             for key in coverage_d:
                 coverage_d[key] = (coverage_d.get(key, 0)) / total_time * 100 # Normalize coverage by total time
             
             for key in dur_d:
                 if dur_d[key] != []:
-                    temp = np.array(dur_d[key])*1000
+                    temp = np.array(dur_d[key]) * 1000 # Convert duration to milliseconds
                     dur_avg_d[key] = dur_avg_d.get(key, 0) + np.mean(temp)
                     dur_std_d[key] = dur_std_d.get(key, 0) + temp.std()
                 else:
@@ -705,6 +740,125 @@ def backfit_microstates_data_ts(
         #rows.append(new_row)
     
     return new_row
+
+
+def backfit_microstates_smooth(
+        clustering,
+        subject,
+        bids_root,
+        sessions,
+        min_run_length=2048,
+        downsample=None,
+        n_clusters=None,
+        output_dir=None
+    ):
+    # This function can be implemented similarly to backfit_microstates_data_ts, but instead of using peaks, it can use the smoothed GFP signal to assign microstate labels to each time point. The backfitting process would involve computing the activation of microstate maps on the smoothed GFP data and assigning labels based on maximum activation. The rest of the analysis (duration, coverage, etc.) can be performed in a similar manner as in backfit_microstates_data_ts.
+    print(f"Extracting peaks for subject {subject}...")
+
+    channel_names = None
+    sampling_rate = None
+    
+    
+    # Compute GFP for the current acquisition            
+
+    #clustering = ModKMeans(n_clusters=n_clusters, random_state=42)
+    
+    #clustering.fit(peaks, picks='all')
+
+    
+    measures_df = pd.DataFrame(columns=['Subject', 'Session', 'Condition', 'Run', 'unlabeled'] + 
+                               [f'{i}_{metric}' for i in range(n_clusters) for metric in ['mean_corr', 'gev', 'occurrences', 'timecov', 'meandurs']])
+   
+   
+ 
+    for session in sessions:
+        ses_dir = os.path.join(bids_root, f'sub-{subject}', f'ses-{session}', 'meg')
+        fif_files = sorted(glob.glob(os.path.join(ses_dir, f'sub-{subject}_ses-{session}_task-rest_acq-*_run-*_meg.fif')))
+
+        # Group runs by acquisition
+        acquisitions = {}
+        for fif_file in fif_files:
+            acq = fif_file.split('_acq-')[1].split('_')[0]  # Extract acquisition label
+            if acq not in acquisitions:
+                acquisitions[acq] = []
+            acquisitions[acq].append(fif_file)
+
+        # Process only the first acquisition
+        if acquisitions:
+            first_acq = list(acquisitions.keys())[0]  # Get the first acquisition
+            acq_files = acquisitions[first_acq]  # Get the files for the first acquisition
+
+            raw_list = []
+            all_data = []
+        #for acq, acq_files in acquisitions.items():
+        #    acq_data = []
+
+            for fif_file in acq_files:
+                raw = mne.io.read_raw_fif(fif_file, preload=True, verbose=False)
+                rename_dict = { ch: f"roi_{i}" for i, ch in enumerate(raw.info["ch_names"])}
+                # Check if the run length meets the minimum requirement
+                raw.rename_channels(rename_dict)
+                if raw.n_times < min_run_length:
+                    print(f"Skipping run {fif_file} (length: {raw.n_times} < {min_run_length})")
+                    continue
+
+                # Apply downsampling if specified
+                if downsample is not None:
+                    raw.resample(downsample, npad="auto")
+                #data = raw.get_data()  # shape: (n_channels, n_times)
+                if channel_names is None:
+                    channel_names = raw.ch_names
+                if sampling_rate is None:
+                    sampling_rate = raw.info['sfreq']
+
+                # Append data for the current run
+                raw_list.append(raw)
+                all_data.append(raw.get_data())
+            
+            all_data_concat = np.concatenate(all_data, axis=1)  # shape: (n_channels, total_n_times_acq)
+            all_data_mean = np.mean(all_data_concat, axis=1)
+            all_data_std = np.std(all_data_concat, axis=1)
+            for raw in raw_list:
+                data = raw.get_data()
+                data_z = np.abs((data - all_data_mean[:, None]) / all_data_std[:, None])
+                raw._data = data_z
+
+                # Backfit the group-level clustering
+                segmentation = clustering.predict(
+                                                raw,
+                                                reject_by_annotation=True,
+                                                factor=10,
+                                                half_window_size=10,
+                                                min_segment_length=5,
+                                                reject_edges=True,
+                                                )
+                subject, _ , condition, _ , run = raw.filenames[0].name.split('_')[:-1]
+                # Compute measures
+                measures = segmentation.compute_parameters()
+                row = {
+                    'Subject': subject,
+                    'Session': session,
+                    'Condition': condition,
+                    'Run': run,
+                    'unlabeled': measures.get('unlabeled', 0),
+                }
+                for i in range(n_clusters):
+                    for metric in ['mean_corr', 'gev', 'occurrences', 'timecov', 'meandurs']:
+                        row[f'{i}_{metric}'] = measures.get(f'{i}_{metric}', np.nan)
+
+                measures_df = pd.concat([measures_df, pd.DataFrame([row])], ignore_index=True)
+
+                #dist = segmentation.compute_parameters(return_dist=True)
+                # Save the distribution dictionary as a .npy file
+                #np.save(distribution_path, dist)
+                file_out = os.path.join(output_dir, 
+                                        raw.filenames[0].name.split('.')[0] + f'_{n_clusters}_microstates_measures.csv')
+                measures_df.to_csv(file_out, index=False)
+    return measures_df
+
+
+
+
 
 def compute_gap_statistic(data, labels, n_clusters, random_state=42):
     """
