@@ -4,7 +4,7 @@ from micros_based_stats.aggregate_peak_backfits import process_microstate_result
 
 if __name__ == "__main__":
     # Path to the folder where the F-statistics (between conditions) results for all the microstates are stored
-    base_folder = './results/'
+    base_folder = './results/24_1000'
 
     process_microstate_results_Fstat(base_folder=base_folder)
     plot_microstate_Fstatistics(base_folder=base_folder,alpha=0.5)
