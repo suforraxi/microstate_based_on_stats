@@ -228,17 +228,15 @@ def perform_clustering(peaks_in_dir,
 def backfit_peaks(clustering_in_dir=None,
                   n_microstates=None, 
                   gfp_peaks_in_dir=None, 
-                  base_out_dir=None,
+                  out_dir=None,
                   infoStub=None):
     
     clustering = read_cluster(os.path.join(clustering_in_dir, 
                                            f"{n_microstates}_clustering.fif")
                                            )
-    save_path = os.path.join(base_out_dir,
-                             "backfitted_peaks"
-                             )
-    if not os.path.exists(save_path):
-        os.makedirs(save_path, exist_ok=True)
+
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir, exist_ok=True)
 
     df = pd.DataFrame(columns=['sub', 'ses', 'microstate', 'visits'])
 
@@ -253,19 +251,19 @@ def backfit_peaks(clustering_in_dir=None,
         unique, counts = np.unique(segmentation.labels, return_counts=True)
         for u, c in zip(unique, counts):
             row = {
-                'sub': os.path.basename(peak_f).split('_')[0].replace('sub-', ''),
-                'ses': os.path.basename(peak_f).split('_')[1].replace('ses-', ''),
+                'sub': os.path.basename(peak_f).split('_')[0],
+                'ses': os.path.basename(peak_f).split('_')[1],
                 'microstate': u,
                 'visits': c}
             df = pd.concat([df, pd.DataFrame([row])], ignore_index=True) 
        
      
                  
-    df.to_csv(os.path.join(save_path,
+    df.to_csv(os.path.join(out_dir,
                            f"{n_microstates}_backfitted_peaks.csv"), 
                            index=False
                            )
-    print(f"Backfitted peaks saved to {save_path}")
+    print(f"Backfitted peaks saved to {out_dir}")
 
 
 def ttest_microstate_visits(backfitted_peaks_in_dir=None,
@@ -300,60 +298,102 @@ def ttest_microstate_visits(backfitted_peaks_in_dir=None,
             print(f"Microstate {u_m} - t-statistic: {t_stat}, p-value: {p_value}")  
             all_test_res.append({
                 'Microstate': u_m,
-                'T-Statistic': t_stat,
+                'T-Statistic': np.abs(t_stat),
                 'p-value': p_value,
                 'N_Microstate': len(u_micro)
             })
+        
     test_res_df = pd.DataFrame(all_test_res)
+    
+    # Group by 'N_Microstate', sort by 'T-Statistic', and relabel 'Microstate'
+    test_res_df = test_res_df.sort_values(['N_Microstate', 'T-Statistic'], ascending=[True, False])
+    test_res_df['unordered_Microstate'] = test_res_df['Microstate']
+    test_res_df['Microstate'] = test_res_df.groupby('N_Microstate').cumcount()
+    
     save_path = os.path.join(base_out_dir, 'ttest')
     if not os.path.exists(save_path):
         os.makedirs(save_path, exist_ok=True)
     test_res_df.to_csv(os.path.join(save_path, 'final_t_results.csv'), index=False)
     print(f"T-test results saved to {save_path}")    
 
+
+def reorder_microstates(clustering_in_dir,
+                        test_result_df,
+                        base_out_dir=None
+                        ):
+    """
+    Reorder microstates based on a specific criterion (e.g., explained variance).
+
+    Parameters:
+    - clustering_results (dict): Dictionary containing clustering results.
+
+    Returns:
+    - reordered_results (dict): Dictionary containing reordered clustering results.
+    """
+    n_microstates = None
+    for f in glob.glob(os.path.join(clustering_in_dir, '*_clustering.fif')):
+        n_microstates = os.path.basename(f).split('_')[0]  # Extract N_Microstate from filename
+    
+        df = test_result_df[test_result_df['N_Microstate'] == int(n_microstates)].copy()
+       
+        clustering = read_cluster(os.path.join(clustering_in_dir, 
+                                           f"{n_microstates}_clustering.fif")
+                                           )
+        clustering.reorder_clusters(order=df['unordered_Microstate'].tolist())  
+        
+        save_path = os.path.join(base_out_dir,
+                                 f"{n_microstates}_clustering.fif")
+        clustering.save(save_path)
 # Function 4: Backfit microstates
-def backfit_microstates(clustering_results, preprocessed_data):
+def backfit_data(clustering_f,
+                        preprocessed_data,
+                        out_dir=None):
     """
     Backfit microstates to the preprocessed data.
 
     Parameters:
-    - clustering_results (dict): Dictionary containing clustering results.
+    - clustering_f (str): Path to the clustering file.
     - preprocessed_data (list of np.ndarray): List of preprocessed data arrays.
 
     Returns:
     - backfitted_labels (list of np.ndarray): List of backfitted microstate labels for each session.
     """
-    pass
+    clustering = read_cluster(clustering_f)
+    n_clusters = clustering.n_clusters
+    measures_df = pd.DataFrame(columns=['sub', 'ses', 'unlabeled'] + 
+                               [f'{metric}_{i}' for i in range(n_clusters) for metric in ['mean_corr', 'gev', 'occurrences', 'timecov', 'meandurs']])
+   
+    for f in glob.glob(os.path.join(preprocessed_data, '*.fif')):
+            # Backfit the group-level clustering
+        raw = mne.io.read_raw_fif(f, preload=True, verbose=False)
+        segmentation = clustering.predict(raw,
+                                    reject_by_annotation=True,
+                                    factor=10,
+                                    half_window_size=10,
+                                    min_segment_length=5,
+                                    reject_edges=True,
+                                    )
+        subject, session , _ = raw.filenames[0].name.split('_')[:-1]
+        # Compute measures
+        measures = segmentation.compute_parameters()
+        row = {
+            'sub': subject,
+            'ses': session,
+            'unlabeled': measures.get('unlabeled', 0),
+        }
+        for i in range(n_clusters):
+            for metric in ['mean_corr', 'gev', 'occurrences', 'timecov', 'meandurs']:
+                row[f'{metric}_{i}'] = measures.get(f'{i}_{metric}', np.nan)
 
-# Function 5: Compute metrics
-def compute_microstate_metrics(backfitted_labels, preprocessed_data):
-    """
-    Compute metrics for the identified microstates.
+        measures_df = pd.concat([measures_df, pd.DataFrame([row])], ignore_index=True)
 
-    Parameters:
-    - backfitted_labels (list of np.ndarray): List of backfitted microstate labels.
-    - preprocessed_data (list of np.ndarray): List of preprocessed data arrays.
-
-    Returns:
-    - metrics (dict): Dictionary containing computed metrics.
-    """
-    pass
-
-# Function 6: Save results
-def save_results(output_dir, clustering_results, backfitted_labels, metrics):
-    """
-    Save the results of the microstate analysis to disk.
-
-    Parameters:
-    - output_dir (str): Directory where results will be saved.
-    - clustering_results (dict): Dictionary containing clustering results.
-    - backfitted_labels (list of np.ndarray): List of backfitted microstate labels.
-    - metrics (dict): Dictionary containing computed metrics.
-
-    Returns:
-    - None
-    """
-    pass
+        #dist = segmentation.compute_parameters(return_dist=True)
+        # Save the distribution dictionary as a .npy file
+        #np.save(distribution_path, dist)
+    file_out = os.path.join(out_dir, 
+                            'backfitted'+ f'_{n_clusters}_microstates_measures.csv')
+    measures_df.to_csv(file_out, index=False)
+    return measures_df
 
 
 def apply_fdr_correction(group,  alpha = 0.05):
@@ -494,10 +534,10 @@ def main_workflow():
     """
 
     # bids root directory
-    bids_root = '/Volumes/CrucialX6/matteo/bids_ms'  # Change this to your BIDS root directory
+    bids_root = '/Volumes/CrucialX6/matteo/bids_als'  # Change this to your BIDS root directory
     # Define sessions
     sessions = ['01']
-    n_subjects = 50 # change according to your dataset
+    n_subjects = 78# change according to your dataset
     subject_list = [f"{i:02d}" for i in range(1, n_subjects+1)]  # Subject IDs from '01'
     #subject_list = ['01', '02', '26', '27']  # Add 'sub-' prefix to each subject ID
     min_run_length = 2048  # Minimum number of time points required for a run to be included
@@ -505,10 +545,11 @@ def main_workflow():
     h_freq = 30.0
     downsample = 256
     # output directory
-    base_output_dir = '/Volumes/CrucialX6/matteo/bids_ms/derivatives'  # Change this to your desired output directory'
+    base_output_dir = '/Volumes/CrucialX6/matteo/bids_als/derivatives'  # Change this to your desired output directory'
     out_dir_preprocessed = os.path.join(base_output_dir, 'preprocessed_data/')
     out_dir_peaks = os.path.join(base_output_dir, 'gfp_peaks/')
     out_dir_combined_peaks = os.path.join(base_output_dir, 'combined_peaks/')
+    out_dir_clustering_ordered = os.path.join(base_output_dir, 'clustering_ordered/')
 
     if not os.path.exists(base_output_dir):
         os.makedirs(base_output_dir)
@@ -520,6 +561,8 @@ def main_workflow():
         os.makedirs(out_dir_peaks)
     if not os.path.exists(out_dir_combined_peaks):
         os.makedirs(out_dir_combined_peaks)
+    if not os.path.exists(out_dir_clustering_ordered):
+        os.makedirs(out_dir_clustering_ordered)
 
     """
     for subj in subject_list:
@@ -544,12 +587,14 @@ def main_workflow():
     
     combine_peaks(peaks_dir=out_dir_peaks, 
                   base_out=base_output_dir)
+    
     """
     # Step 3: Perform clustering
     file_stub='/Volumes/CrucialX6/matteo/bids_ms/derivatives/preprocessed_data/sub-01_ses-01_task-combined_raw.fif'
     raw = mne.io.read_raw_fif(file_stub, preload=True, verbose=False)
     infoStub = raw.info
-    n_microstates = list(range(17, 41))  # Change this to the desired number of microstates
+    n_microstates = list(range(2, 41))  # Change this to the desired number of microstates
+    
     for n in n_microstates:
         perform_clustering(peaks_in_dir=out_dir_combined_peaks,
                         base_out_dir=base_output_dir, 
@@ -561,28 +606,38 @@ def main_workflow():
             clustering_in_dir=os.path.join(base_output_dir, "clustering"),
             n_microstates=n,
             gfp_peaks_in_dir=out_dir_peaks,
-            base_out_dir=base_output_dir,
+            out_dir=os.path.join(base_output_dir, "backfitted_peaks"),
             infoStub=infoStub
         )
-
+    
     backfitted_peaks_dir = os.path.join(base_output_dir, "backfitted_peaks")
     ttest_microstate_visits(backfitted_peaks_in_dir=backfitted_peaks_dir,
                             base_out_dir=base_output_dir,
                             bids_root=bids_root )
     
+    test_file = os.path.join(base_output_dir, 'ttest', 'final_t_results.csv')
+    test_result_df = pd.read_csv(test_file)
+    # reorder microstates based on t-test results
+    reorder_microstates(clustering_in_dir=os.path.join(base_output_dir, "clustering"),
+                        test_result_df=test_result_df,
+                        base_out_dir=os.path.join(base_output_dir, "clustering_ordered")
+                        )
+    for n in n_microstates:
+         backfit_peaks(
+            clustering_in_dir=os.path.join(base_output_dir, "clustering_ordered"),
+            n_microstates=n,
+            gfp_peaks_in_dir=out_dir_peaks,
+            out_dir=os.path.join(base_output_dir, "backfitted_peaks_ordered"),
+            infoStub=infoStub
+        )
+    
+
+    #reorder peak backfitting based on t-test results
+
     plot_t_statistics(base_folder=os.path.join(base_output_dir, 
-                                               "ttest"),
-                                                 alpha= 0.05
-                                                 )
-    # Step 4: Backfit microstates
-    #backfitted_labels = backfit_microstates(clustering_results, preprocessed_data)
-
-    # Step 5: Compute metrics
-    #metrics = compute_microstate_metrics(backfitted_labels, preprocessed_data)
-
-    # Step 6: Save results
-    #save_results(output_dir, clustering_results, backfitted_labels, metrics)
-
+                                              "ttest"),
+                                                alpha= 0.05
+                                                )
     print("Microstate analysis completed successfully.")
 
 if __name__ == "__main__":
