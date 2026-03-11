@@ -280,7 +280,7 @@ def ttest_microstate_visits(backfitted_peaks_in_dir=None,
     all_test_res = []
     for f in backfit_f:
         c_df = pd.read_csv(f)
-        c_df['sub'] = c_df['sub'].apply(lambda x: f"sub-{int(x):02d}")  # Ensure 'sub' is a zero-padded string
+        #c_df['sub'] = c_df['sub'].apply(lambda x: f"sub-{int(x):02d}")  # Ensure 'sub' is a zero-padded string
         # Remove microstate '-1' from all subjects
         c_df = c_df[c_df['microstate'] != -1]
         c_df['visits_z'] = c_df.groupby(['sub', 'ses'])['visits'].transform(
@@ -309,6 +309,10 @@ def ttest_microstate_visits(backfitted_peaks_in_dir=None,
     test_res_df = test_res_df.sort_values(['N_Microstate', 'T-Statistic'], ascending=[True, False])
     test_res_df['unordered_Microstate'] = test_res_df['Microstate']
     test_res_df['Microstate'] = test_res_df.groupby('N_Microstate').cumcount()
+
+    # add FDR correction for each N_Microstate group
+    
+
     
     save_path = os.path.join(base_out_dir, 'ttest')
     if not os.path.exists(save_path):
@@ -346,8 +350,12 @@ def reorder_microstates(clustering_in_dir,
         clustering.save(save_path)
 # Function 4: Backfit microstates
 def backfit_data(clustering_f,
-                        preprocessed_data,
-                        out_dir=None):
+                preprocessed_data,
+                factor=0,
+                half_window_size=10,    
+                min_segment_length=5,
+                out_dir=None
+                ):
     """
     Backfit microstates to the preprocessed data.
 
@@ -360,25 +368,39 @@ def backfit_data(clustering_f,
     """
     clustering = read_cluster(clustering_f)
     n_clusters = clustering.n_clusters
-    measures_df = pd.DataFrame(columns=['sub', 'ses', 'unlabeled'] + 
+    measures_df = pd.DataFrame(columns=['sub',
+                                        'ses',
+                                        'entropy',
+                                        'unlabeled'] + 
                                [f'{metric}_{i}' for i in range(n_clusters) for metric in ['mean_corr', 'gev', 'occurrences', 'timecov', 'meandurs']])
-   
-    for f in glob.glob(os.path.join(preprocessed_data, '*.fif')):
+    file_list = glob.glob(os.path.join(preprocessed_data, '*.fif')) 
+    tra_m = np.zeros((len(file_list), 
+                      n_clusters, 
+                      n_clusters)
+                      )  # Initialize transition matrix
+    tra_e_m = np.zeros((len(file_list),
+                        n_clusters, 
+                        n_clusters)
+                        )  # Initialize transition expected matrix
+    for fidx, f in enumerate(file_list):
             # Backfit the group-level clustering
+        print(f"Backfitting microstates for {f} using clustering from {clustering_f}")
         raw = mne.io.read_raw_fif(f, preload=True, verbose=False)
         segmentation = clustering.predict(raw,
-                                    reject_by_annotation=True,
-                                    factor=10,
-                                    half_window_size=10,
-                                    min_segment_length=5,
+                                    factor=factor,
+                                    half_window_size=half_window_size,
+                                    min_segment_length=min_segment_length,
                                     reject_edges=True,
+                                    reject_by_annotation=True,
                                     )
         subject, session , _ = raw.filenames[0].name.split('_')[:-1]
         # Compute measures
         measures = segmentation.compute_parameters()
+        e_h = segmentation.entropy(ignore_repetitions=False)
         row = {
             'sub': subject,
             'ses': session,
+            'entropy': e_h,
             'unlabeled': measures.get('unlabeled', 0),
         }
         for i in range(n_clusters):
@@ -387,13 +409,208 @@ def backfit_data(clustering_f,
 
         measures_df = pd.concat([measures_df, pd.DataFrame([row])], ignore_index=True)
 
+        tra_m[fidx,:,:] = segmentation.compute_transition_matrix(
+            ignore_repetitions=False
+            )
+        tra_e_m[fidx,:,:] = segmentation.compute_expected_transition_matrix(
+            ignore_repetitions=False
+            )
+
+        
         #dist = segmentation.compute_parameters(return_dist=True)
         # Save the distribution dictionary as a .npy file
         #np.save(distribution_path, dist)
     file_out = os.path.join(out_dir, 
-                            'backfitted'+ f'_{n_clusters}_microstates_measures.csv')
+                            'backfitted'+ f'_factor_{factor}_ws_{half_window_size}_{n_clusters}_microstates_measures.csv')
     measures_df.to_csv(file_out, index=False)
-    return measures_df
+    print(f"Backfitted measures saved to {file_out}")
+
+    tra_m_out = os.path.join(out_dir,
+                             f'backfitted_factor_{factor}_ws_{half_window_size}_{n_clusters}_transition_matrices.npy')
+    np.save(tra_m_out, tra_m)
+    print(f"Transition matrices saved to {tra_m_out}")  
+
+    tra_e_m_out = os.path.join(out_dir,
+                               f'backfitted_factor_{factor}_ws_{half_window_size}_{n_clusters}_expected_transition_matrices.npy')
+    np.save(tra_e_m_out, tra_e_m)
+    print(f"Expected transition matrices saved to {tra_e_m_out}")
+
+
+def corr_inv_dot(source_vector, target_map):
+    """
+    Compute polarity-invariant correlation using dot product between a source vector and rows of target_map.
+
+    Parameters:
+    -----------
+    source_vector : np.ndarray
+        A 1D array representing the source vector (shape: (x,)).
+    target_map : np.ndarray
+        A 2D array where each row is a target vector (shape: (y, x)).
+
+    Returns:
+    --------
+    np.ndarray
+        A 1D array of shape (y,) containing the maximum correlation values for the source vector
+        with each target row, considering polarity invariance.
+    """
+    # Normalize source_vector and rows of target_map
+    source_norm = source_vector / np.linalg.norm(source_vector)
+    target_norm = target_map / np.linalg.norm(target_map, axis=1, keepdims=True)
+
+    # Compute dot product for original and inverted polarity
+    corr = np.dot(target_norm, source_norm)
+    corr_inv = np.dot(target_norm, -source_norm)
+
+    # Take the maximum correlation for polarity invariance
+    return np.maximum(corr, corr_inv)
+
+"""
+def correlate_maps(maps_file_source,
+                   source_rois,
+                   in_folder,
+                   base_output_dir):
+    
+    # read source maps and select ROIs
+    source_maps = read_cluster(maps_file_source)._cluster_centers
+    source_matrix = source_maps[source_rois, :]
+    # read all the clustering solutions
+    all_files = sorted(
+            glob.glob(
+                os.path.join(
+                    in_folder,
+                    "**_clustering.fif",
+                ),
+                recursive=True
+            )
+        )
+    
+    df_test = pd.read_csv(os.path.join(base_output_dir, 'ttest', 'significance_summary.csv'))
+    all_corr_m = []
+
+    for f in all_files:
+        n_microstates = os.path.basename(os.path.dirname(f)).split("_")[0]
+        target_map = read_cluster(f)._cluster_centers
+        print(f"Loaded microstate_maps with shape: {target_map.shape}")
+    
+        # Perform t-test for each microstate map against the source maps
+
+        if n_sig_states > 0:
+            n_sig_x_k[int(n_microstates)] = n_sig_states
+            sig_k.append(int(n_microstates))
+            print(f"Number of significant states after FDR correction: {n_sig_states}")
+            #Compute the correlation between source_maps and target_map
+            corr_m = np.zeros((source_matrix.shape[0], target_map.shape[0]))
+            for i in range(source_matrix.shape[0]):
+                source_vector = source_matrix[i, :]
+                corr_m[i, :] = corr_inv_dot(source_vector, target_map)
+            
+            all_corr_m.append(corr_m)
+
+            
+    max_n_hdm = max([m.shape[1] for m in all_corr_m])
+    m = np.zeros((max_n_hdm, len(all_corr_m)))
+    
+    source_map = [0, 1] # Assuming you want to use the first two source maps for correlation
+    for source_idx in source_map:
+        for i in range(len(all_corr_m)):
+                n_hdm = all_corr_m[i].shape[1]
+                m[:n_hdm, i] = all_corr_m[i][source_idx, :n_hdm]
+        
+        heat_m_df = pd.DataFrame(m, columns=[f'K={k}' for k in sig_k])
+        # Reorder the columns in ascending order according to k
+        heat_m_df = heat_m_df[sorted(heat_m_df.columns, key=lambda col: int(col.split('=')[1]))]
+
+        # Set the index names as 'HDM 0', 'HDM 1', etc.
+        heat_m_df.index = [f'HDM {i}' for i in range(heat_m_df.shape[0])]
+
+        # Create a mask for zeros to make them black and hide the numbers
+        mask = (heat_m_df == 0)
+
+        plt.figure(figsize=(12, 10))  # Adjust the figure size as needed
+        hm = sns.heatmap(heat_m_df,
+                    cmap='viridis',
+                    annot=True,
+                    annot_kws={"size": 12,
+                               "weight": 'bold'
+                        },
+                    fmt=".2f",
+                    mask=mask,
+                    cbar_kws={'label': 'Spatial Correlation',
+                              'ticks': []
+                              }
+                )
+
+        # Overlay black boxes for zeros
+        for (i, j), val in np.ndenumerate(heat_m_df.values):
+            if val == 0:
+                plt.gca().add_patch(plt.Rectangle((j, i), 1, 1, color='white'))  # Add white box to hide the number
+                plt.gca().add_patch(plt.Rectangle((j, i), 1, 1, fill=False, edgecolor='black', lw=0.5))  # Add visible borders
+
+        # Add borders to the bottom of the heatmap
+        plt.gca().add_patch(plt.Rectangle((-0.5, heat_m_df.shape[0] - 0.1), heat_m_df.shape[1], 1, 
+                                          fill=False, edgecolor='black', lw=1))
+
+        plt.title("")
+        plt.xlabel("K solutions", fontsize=20)
+        plt.ylabel("HDM maps", fontsize=20)
+        plt.xticks(rotation=45, fontsize=18)
+        plt.yticks(rotation=0, fontsize=18)
+        hm.figure.axes[-1].yaxis.label.set_size(18) 
+        #plt.show()
+        save_path = os.path.join(base_output_dir, f"{source_idx}_heat_map_matrices")
+        plt.savefig(save_path)
+        plt.close()
+        
+        # Create a new DataFrame for n_sig_x_k values
+        n_sig_x_k_df = pd.DataFrame.from_dict(n_sig_x_k, orient='index',
+                                              columns=['n_sig_states'])
+        n_sig_x_k_df.index.name = 'K'
+
+        # Order the rows based on K
+        n_sig_x_k_df = n_sig_x_k_df.sort_index()
+        #n_sig_x_k_df['K-clusters'] = n_sig_x_k_df.index  # Convert K to string for better display
+        #col_order = ['K-clusters','n_sig_states']
+        #n_sig_x_k_df = n_sig_x_k_df[col_order]
+        
+        # Update the heatmap for n_sig_x_k values
+        plt.figure(figsize=(6, 16))  # Keep the compact width
+        sns.heatmap(n_sig_x_k_df,
+                    cmap=sns.color_palette("coolwarm", as_cmap=True),
+                    annot=True,
+                    annot_kws={"size": 25, "weight": 'bold'},  # Adjust annotation font size and weight
+                    fmt="d",
+                    linewidths=0.5,
+                    linecolor='black',
+                    cbar=False,
+                    cbar_kws={'label': 'Number of Significant HDMs\nafter FDR Correction', 
+                              'ticks': []}
+                              )  # Remove ticks
+        plt.title("",
+                  fontsize=18,
+                  fontweight='bold',
+                  pad=10
+                  )
+        plt.xlabel("")  # Remove column labels
+        plt.xticks([])  # Hide x-axis ticks
+        plt.yticks(rotation=0, 
+                   fontsize=20,
+                   fontweight='bold')  # Rotate y-ticks to horizontal and adjust font size
+        plt.ylabel("",
+                   rotation=0,
+                   fontsize=22,
+                   fontweight='bold',
+                   loc='top'
+                   )
+
+        # Save the heatmap
+        save_path = os.path.join(base_output_dir, "n_sig_x_k_heatmap.png")
+        plt.savefig(save_path)
+        plt.close()
+        n_sig_x_k_df.to_csv(os.path.join(base_output_dir,
+                                         "n_sig_x_k.csv"),
+                            index=True
+                            )
+"""
 
 
 def apply_fdr_correction(group,  alpha = 0.05):
@@ -459,40 +676,69 @@ def plot_t_statistics(base_folder, alpha=0.05):
     # Count the number of significant states for each N_Microstate
     significance_summary = df.groupby("N_Microstate")["Significant_FDR"].sum().reset_index()
     significance_summary.rename(columns={"Significant_FDR": "Num_Significant_States_FDR"}, inplace=True)
-
-    # Subplot 1: Maximum T values
+    df.to_csv(os.path.join(base_folder, "significance_summary.csv"), index=False)
+    # Subplot 1: Maximum T values and Number of Significant States (FDR correction)
     plt.figure(figsize=(10, 6))
-    plt.plot(summary_df["N_Microstate"], summary_df["max_T"], marker="o", label="Max T", color="blue")
-    plt.ylabel("T Value", fontsize=12)
-    plt.xlabel("Number of k Microstates", fontsize=12)
-    plt.title("Maximum T-Values across different number of microstates", fontsize=14)
-    plt.legend(fontsize=10)
-    plt.grid(alpha=0.3)
+
+    # Plot Maximum T values on the left y-axis
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+    ax1.plot(summary_df["N_Microstate"],
+             summary_df["max_T"],
+             marker="o",
+             label="Max T",
+             color="black"
+             )
+    ax1.set_ylabel("Maximum T Value",
+                   fontsize=12,
+                   color="black")
+    ax1.set_xlabel("Number of k Microstates", fontsize=12)
+    ax1.set_title("Maximum T-Values and significant states across different number of microstates", fontsize=14)
+    ax1.tick_params(axis='y', labelcolor="black")
+    ax1.grid(alpha=0.3)
 
     # Highlight the maximum T value(s) with a red point
     max_t_abs = summary_df['max_T'].abs().max()
     max_t_points = summary_df[summary_df['max_T'].abs() == max_t_abs]
-    plt.scatter(max_t_points['N_Microstate'], max_t_points['max_T'], color='red', label='Max T (highlighted)', zorder=5)
+    ax1.scatter(max_t_points['N_Microstate'],
+                max_t_points['max_T'],
+                color='red',
+                label='Global Max T (highlighted)',
+                zorder=5
+                )
 
     # Set x-ticks to integer values from 0 to max N_Microstate + 2 and rotate them by 45 degrees
     max_n_microstate = summary_df["N_Microstate"].max()
-    plt.xticks(np.arange(0, max_n_microstate + 3, step=1), rotation=45)
+    ax1.set_xticks(np.arange(0, max_n_microstate + 3, step=1))
+    ax1.tick_params(axis='x', rotation=45)
 
-    output_path_max_t = os.path.join(base_folder, "Max_T_Values_Plot.png")
-    plt.tight_layout()
-    plt.savefig(output_path_max_t, dpi=300)
-    print(f"Max T values plot saved to {output_path_max_t}")
+    # Create a second y-axis for the Number of Significant States (FDR correction)
+    ax2 = ax1.twinx()
+    ax2.plot(significance_summary["N_Microstate"],
+             significance_summary["Num_Significant_States_FDR"],
+             linestyle="--",
+             color="green",
+             label="Num Significant States (FDR)"
+             )
+    ax2.set_ylabel("Number of Significant States (FDR)",
+                   fontsize=12,
+                   color="green")
+    ax2.set_yticks(np.arange(0, 
+                             significance_summary['Num_Significant_States_FDR'].max()+1,
+                             step=1)
+                             )
+    ax2.tick_params(axis='y',
+                    labelcolor="green")
 
-    # Subplot 2: Number of significant states (FDR correction)
-    plt.figure(figsize=(10, 6))
-    plt.bar(significance_summary["N_Microstate"], significance_summary["Num_Significant_States_FDR"], color="purple", alpha=0.7)
-    plt.ylabel("Number of Significant States (FDR)", fontsize=12)
-    plt.title("Number of Significant States After FDR Correction", fontsize=14)
-    plt.grid(alpha=0.3)
-    output_path_significant_states = os.path.join(base_folder, "Significant_States_FDR_Plot_T.png")
+    # Combine legends from both axes
+    lines_1, labels_1 = ax1.get_legend_handles_labels()
+    lines_2, labels_2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines_1 + lines_2, labels_1 + labels_2, fontsize=10)
+
+    # Save the combined plot
+    output_path_combined = os.path.join(base_folder, "Max_T_and_Significant_States_Plot.png")
     plt.tight_layout()
-    plt.savefig(output_path_significant_states, dpi=300)
-    print(f"Significant states plot saved to {output_path_significant_states}")
+    plt.savefig(output_path_combined, dpi=300)
+    print(f"Combined plot saved to {output_path_combined}")
 
     # Subplot 4: Significant states for each N_Microstate (FDR correction)
     plt.figure(figsize=(10, 6))
