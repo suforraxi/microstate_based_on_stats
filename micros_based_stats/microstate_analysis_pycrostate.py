@@ -12,8 +12,13 @@ import mne
 import glob
 from scipy.stats import ttest_ind
 
-from statsmodels.stats.multitest import multipletests  # Import for FDR correction
+from statsmodels.stats.multitest import multipletests # Import for FDR correction
+from statsmodels.stats.anova import AnovaRM 
+
 import matplotlib.pyplot as plt
+
+from scipy.stats import permutation_test
+
 
 
 # Function 1: Load and preprocess data
@@ -249,12 +254,16 @@ def backfit_peaks(clustering_in_dir=None,
                                           picks='all')
 
         unique, counts = np.unique(segmentation.labels, return_counts=True)
-        for u, c in zip(unique, counts):
+        label_range = range(-1, n_microstates)
+        label_counts = {label: 0 for label in label_range}  # Initialize all labels with 0 visits
+        label_counts.update(dict(zip(unique, counts)))  # Update with actual counts
+
+        for u in label_range:
             row = {
                 'sub': os.path.basename(peak_f).split('_')[0],
                 'ses': os.path.basename(peak_f).split('_')[1],
                 'microstate': u,
-                'visits': c}
+                'visits': label_counts[u]}
             df = pd.concat([df, pd.DataFrame([row])], ignore_index=True) 
        
      
@@ -264,7 +273,6 @@ def backfit_peaks(clustering_in_dir=None,
                            index=False
                            )
     print(f"Backfitted peaks saved to {out_dir}")
-
 
 def ttest_microstate_visits(backfitted_peaks_in_dir=None,
                             base_out_dir=None,
@@ -320,7 +328,144 @@ def ttest_microstate_visits(backfitted_peaks_in_dir=None,
     test_res_df.to_csv(os.path.join(save_path, 'final_t_results.csv'), index=False)
     print(f"T-test results saved to {save_path}")    
 
+def perm_test_microstate_visits(backfitted_peaks_in_dir=None,
+                            base_out_dir=None,
+                            bids_root=None,
+                            n_perms=1000):
+    
+    part_df =pd.read_csv(bids_root + '/participants.tsv', sep='\t')
+    rename_dict = {'participant_id': 'sub'}
+    part_df = part_df.rename(columns=rename_dict)
+    
+    # Load all backfitted peaks CSV files
+    backfit_f = glob.glob(os.path.join(backfitted_peaks_in_dir, 
+                                       '*_backfitted_peaks.csv'))
+    all_test_res = []
+    for f in backfit_f:
+        c_df = pd.read_csv(f)
+        #c_df['sub'] = c_df['sub'].apply(lambda x: f"sub-{int(x):02d}")  # Ensure 'sub' is a zero-padded string
+        # Remove microstate '-1' from all subjects
+        c_df = c_df[c_df['microstate'] != -1]
+        c_df['visits_z'] = c_df.groupby(['sub', 'ses'])['visits'].transform(
+            lambda x: (x - x.mean()) / x.std() if x.std() != 0 else x - x.mean()
+        )
+        
+        u_micro = c_df['microstate'].unique()
+        for u_m in u_micro:
+            micro_df = c_df[c_df['microstate'] == u_m]
+            merged_df = pd.merge(micro_df, part_df, on='sub', how='left')
+            # Perform t-test or any other statistical test here using merged_df
+            group1 = merged_df[merged_df['case_ctrl'] == 0]['visits_z']
+            group2 = merged_df[merged_df['case_ctrl'] == 1]['visits_z']
+            
+            t_stat, p_value = ttest_ind(group1, group2, equal_var=False)
+            
+            res = permutation_test(
+                (group1, group2), 
+                cohens_d_statistic, 
+                permutation_type='independent', 
+                n_resamples=n_perms,
+                alternative='two-sided'
+            )
+            
+            
+            print(f"Microstate {u_m} - d-statistic: {t_stat}, p-value: {p_value}")  
+            all_test_res.append({
+                'Microstate': u_m,
+                'D-Statistic': np.abs(res.statistic),
+                'p-value': res.pvalue,
+                'N_Microstate': len(u_micro)
+            })
+        
+    test_res_df = pd.DataFrame(all_test_res)
+    
+    # Group by 'N_Microstate', sort by 'D-Statistic', and relabel 'Microstate'
+    test_res_df = test_res_df.sort_values(['N_Microstate', 'D-Statistic'], ascending=[True, False])
+    test_res_df['unordered_Microstate'] = test_res_df['Microstate']
+    test_res_df['Microstate'] = test_res_df.groupby('N_Microstate').cumcount()
 
+    # add FDR correction for each N_Microstate group
+    
+
+    
+    save_path = os.path.join(base_out_dir, 'permutation_test')
+    if not os.path.exists(save_path):
+        os.makedirs(save_path, exist_ok=True)
+    test_res_df.to_csv(os.path.join(save_path, 'final_d_results.csv'), index=False)
+    print(f"Permutation test results saved to {save_path}")    
+
+def cohens_d_statistic(group1, group2):
+    """
+    Calculates Cohen's d for two independent groups.
+    This serves as the 'statistic' for our permutation test.
+    """
+    n1, n2 = len(group1), len(group2)
+    v1, v2 = np.var(group1, ddof=1), np.var(group2, ddof=1)
+    
+    # Pooled standard deviation
+    s_pooled = np.sqrt(((n1 - 1) * v1 + (n2 - 1) * v2) / (n1 + n2 - 2))
+    
+    # Standardize the difference
+    # so positive values mean group2 has more visits
+    return (np.mean(group2) - np.mean(group1)) / s_pooled
+
+def rm_anova_microstate_visits(backfitted_peaks_in_dir=None,
+                               base_out_dir=None,
+                               bids_root=None):
+    
+    # Load all backfitted peaks CSV files
+    backfit_f = glob.glob(os.path.join(backfitted_peaks_in_dir, 
+                                       '*_backfitted_peaks.csv'))
+    all_test_res = []
+    for f in backfit_f:
+        c_df = pd.read_csv(f)
+     
+        # Remove microstate '-1' from all subjects
+        c_df = c_df[c_df['microstate'] != -1]
+        c_df['visits_z'] = c_df.groupby(['sub', 'ses'])['visits'].transform(
+            lambda x: (x - x.mean()) / x.std() if x.std() != 0 else x - x.mean()
+        )
+        
+        u_micro = c_df['microstate'].unique()
+        for u_m in u_micro:
+            micro_df = c_df[c_df['microstate'] == u_m]
+            # Perform t-test or any other statistical test here using merged_df
+            micro_df['ses'] = micro_df['ses'].astype('category')
+            micro_df['microstate'] = micro_df['microstate'].astype('category')
+            micro_df['sub'] = micro_df['sub'].astype('category')
+                # Perform repeated measures ANOVA
+            aov = AnovaRM(data=micro_df,
+                          depvar='visits_z',
+                          subject='sub',
+                          within=['ses'])
+            res = aov.fit()
+
+            # Extract F-value and p-value
+            f_value = res.anova_table.iloc[0, 0] # F value for 'Session'
+            p_value = res.anova_table.iloc[0, 3]
+            
+            print(f"Microstate {u_m} - F-statistic: {f_value}, p-value: {p_value}")  
+            all_test_res.append({
+                'Microstate': u_m,
+                'F-Statistic': np.abs(f_value),
+                'p-value': p_value,
+                'N_Microstate': len(u_micro)
+            })
+        
+    test_res_df = pd.DataFrame(all_test_res)
+    
+    # Group by 'N_Microstate', sort by 'F-Statistic', and relabel 'Microstate'
+    test_res_df = test_res_df.sort_values(['N_Microstate', 'F-Statistic'], ascending=[True, False])
+    test_res_df['unordered_Microstate'] = test_res_df['Microstate']
+    test_res_df['Microstate'] = test_res_df.groupby('N_Microstate').cumcount()
+     
+    save_path = os.path.join(base_out_dir, 'anova')
+    if not os.path.exists(save_path):
+        os.makedirs(save_path, exist_ok=True)
+    test_res_df.to_csv(os.path.join(save_path, 'final_anova_results.csv'), index=False)
+    print(f"ANOVA results saved to {save_path}")    
+
+ 
 def reorder_microstates(clustering_in_dir,
                         test_result_df,
                         base_out_dir=None
@@ -755,6 +900,219 @@ def plot_t_statistics(base_folder, alpha=0.05):
     plt.title("Significant States After FDR Correction", fontsize=14)
     plt.grid(alpha=0.3)
     output_path_significant_states_scatter = os.path.join(base_folder, "Significant_States_Scatter_Plot_T.png")
+    plt.tight_layout()
+    plt.savefig(output_path_significant_states_scatter, dpi=300)
+    print(f"Significant states scatter plot saved to {output_path_significant_states_scatter}")
+    #plt.show()
+
+
+def plot_f_statistics(base_folder, alpha=0.05):
+        # Load the final_anova_results.csv file
+    file_path = os.path.join(base_folder, "final_anova_results.csv")
+    df = pd.read_csv(file_path)
+
+    # Compute the maximum a F value for each N_Microstate, but save the original value
+    summary_df = df.loc[df.groupby("N_Microstate")['F-Statistic'].apply(lambda x: abs(x).idxmax())]
+    summary_df = summary_df[['N_Microstate', 'F-Statistic']].rename(columns={'F-Statistic': 'max_F'})
+
+    # Apply Bonferroni correction and count significant states
+    df["Bonferroni_p"] = alpha / df["N_Microstate"]  # Adjust p-values using Bonferroni correction
+    df["Significant_Bonferroni"] = df['p-value'] < df["Bonferroni_p"]  # Determine significance after correction
+
+    #df = df.groupby("N_Microstate").apply(apply_fdr_correction).reset_index(drop=True)  # Reset index to avoid ambiguity
+    # Exclude grouping columns explicitly during the groupby operation
+    df = df.groupby("N_Microstate", group_keys=False).apply(
+            lambda group: apply_fdr_correction(group).assign(N_Microstate=group.name)
+    ).reset_index(drop=True)
+    # Count the number of significant states for each N_Microstate
+    significance_summary = df.groupby("N_Microstate")["Significant_FDR"].sum().reset_index()
+    significance_summary.rename(columns={"Significant_FDR": "Num_Significant_States_FDR"}, inplace=True)
+    df.to_csv(os.path.join(base_folder, "significance_summary.csv"), index=False)
+    # Subplot 1: Maximum F values and Number of Significant States (FDR correction)
+    plt.figure(figsize=(10, 6))
+
+    # Plot Maximum F values on the left y-axis
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+    ax1.plot(summary_df["N_Microstate"],
+             summary_df["max_F"],
+             marker="o",
+             label="Max F",
+             color="black"
+             )
+    ax1.set_ylabel("Maximum F Value",
+                   fontsize=12,
+                   color="black")
+    ax1.set_xlabel("Number of k Microstates", fontsize=12)
+    ax1.set_title("Maximum F-Values and significant states across different number of microstates", fontsize=14)
+    ax1.tick_params(axis='y', labelcolor="black")
+    ax1.grid(alpha=0.3)
+
+    # Highlight the maximum F value(s) with a red point
+    max_f_abs = summary_df['max_F'].max()
+    max_f_points = summary_df[summary_df['max_F'] == max_f_abs]
+    ax1.scatter(max_f_points['N_Microstate'],
+                max_f_points['max_F'],
+                color='red',
+                label='Global Max F (highlighted)',
+                zorder=5
+                )
+
+    # Set x-ticks to integer values from 0 to max N_Microstate + 2 and rotate them by 45 degrees
+    max_n_microstate = summary_df["N_Microstate"].max()
+    ax1.set_xticks(np.arange(0, max_n_microstate + 3, step=1))
+    ax1.tick_params(axis='x', rotation=45)
+
+    # Create a second y-axis for the Number of Significant States (FDR correction)
+    ax2 = ax1.twinx()
+    ax2.plot(significance_summary["N_Microstate"],
+             significance_summary["Num_Significant_States_FDR"],
+             linestyle="--",
+             color="green",
+             label="Num Significant States (FDR)"
+             )
+    ax2.set_ylabel("Number of Significant States (FDR)",
+                   fontsize=12,
+                   color="green")
+    ax2.set_yticks(np.arange(0, 
+                             significance_summary['Num_Significant_States_FDR'].max()+1,
+                             step=1)
+                             )
+    ax2.tick_params(axis='y',
+                    labelcolor="green")
+
+    # Combine legends from both axes
+    lines_1, labels_1 = ax1.get_legend_handles_labels()
+    lines_2, labels_2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines_1 + lines_2, labels_1 + labels_2, fontsize=10)
+
+    # Save the combined plot
+    output_path_combined = os.path.join(base_folder, "Max_F_and_Significant_States_Plot.png")
+    plt.tight_layout()
+    plt.savefig(output_path_combined, dpi=300)
+    print(f"Combined plot saved to {output_path_combined}")
+
+    # Subplot 4: Significant states for each N_Microstate (FDR correction)
+    plt.figure(figsize=(10, 6))
+    for n_microstate in df["N_Microstate"].unique():
+        significant_states = df[(df["N_Microstate"] == n_microstate) & (df["Significant_FDR"])]
+        plt.scatter(
+            [n_microstate] * len(significant_states),
+            significant_states["Microstate"],
+            label=f"N_Microstate={n_microstate}" if len(significant_states) > 0 else "",
+            alpha=0.7
+        )
+    plt.xlabel("Number of Microstates (N_Microstate)", fontsize=12)
+    plt.ylabel("Microstate", fontsize=12)
+    plt.title("Significant States After FDR Correction", fontsize=14)
+    plt.grid(alpha=0.3)
+    output_path_significant_states_scatter = os.path.join(base_folder, "Significant_States_Scatter_Plot_FDR.png")
+    plt.tight_layout()
+    plt.savefig(output_path_significant_states_scatter, dpi=300)
+    print(f"Significant states scatter plot saved to {output_path_significant_states_scatter}")
+    #plt.show()
+
+
+
+def plot_d_statistics(base_folder, alpha=0.05):
+       # Load the final_d_results.csv file
+    file_path = os.path.join(base_folder, "final_d_results.csv")
+    df = pd.read_csv(file_path)
+
+    # Compute the maximum absolute T value for each N_Microstate, but save the original value
+    summary_df = df.loc[df.groupby("N_Microstate")['D-Statistic'].apply(lambda x: abs(x).idxmax())]
+    summary_df = summary_df[['N_Microstate', 'D-Statistic']].rename(columns={'D-Statistic': 'max_D'})
+
+    # Apply Bonferroni correction and count significant states
+    df["Bonferroni_p"] = alpha / df["N_Microstate"]  # Adjust p-values using Bonferroni correction
+    df["Significant_Bonferroni"] = df['p-value'] < df["Bonferroni_p"]  # Determine significance after correction
+
+    #df = df.groupby("N_Microstate").apply(apply_fdr_correction).reset_index(drop=True)  # Reset index to avoid ambiguity
+    # Exclude grouping columns explicitly during the groupby operation
+    df = df.groupby("N_Microstate", group_keys=False).apply(
+            lambda group: apply_fdr_correction(group).assign(N_Microstate=group.name)
+    ).reset_index(drop=True)
+    # Count the number of significant states for each N_Microstate
+    significance_summary = df.groupby("N_Microstate")["Significant_FDR"].sum().reset_index()
+    significance_summary.rename(columns={"Significant_FDR": "Num_Significant_States_FDR"}, inplace=True)
+    df.to_csv(os.path.join(base_folder, "significance_summary.csv"), index=False)
+    # Subplot 1: Maximum T values and Number of Significant States (FDR correction)
+    plt.figure(figsize=(10, 6))
+
+    # Plot Maximum T values on the left y-axis
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+    ax1.plot(summary_df["N_Microstate"],
+             summary_df["max_D"],
+             marker="o",
+             label="Max D",
+             color="black"
+             )
+    ax1.set_ylabel("Maximum D Value",
+                   fontsize=12,
+                   color="black")
+    ax1.set_xlabel("Number of k Microstates", fontsize=12)
+    ax1.set_title("Maximum D-Values and significant states across different number of microstates", fontsize=14)
+    ax1.tick_params(axis='y', labelcolor="black")
+    ax1.grid(alpha=0.3)
+
+    # Highlight the maximum D value(s) with a red point
+    max_d_abs = summary_df['max_D'].abs().max()
+    max_d_points = summary_df[summary_df['max_D'].abs() == max_d_abs]
+    ax1.scatter(max_d_points['N_Microstate'],
+                max_d_points['max_D'],
+                color='red',
+                label='Global Max D (highlighted)',
+                zorder=5
+                )
+
+    # Set x-ticks to integer values from 0 to max N_Microstate + 2 and rotate them by 45 degrees
+    max_n_microstate = summary_df["N_Microstate"].max()
+    ax1.set_xticks(np.arange(0, max_n_microstate + 3, step=1))
+    ax1.tick_params(axis='x', rotation=45)
+
+    # Create a second y-axis for the Number of Significant States (FDR correction)
+    ax2 = ax1.twinx()
+    ax2.plot(significance_summary["N_Microstate"],
+             significance_summary["Num_Significant_States_FDR"],
+             linestyle="--",
+             color="green",
+             label="Num Significant States (FDR)"
+             )
+    ax2.set_ylabel("Number of Significant States (FDR)",
+                   fontsize=12,
+                   color="green")
+    ax2.set_yticks(np.arange(0, 
+                             significance_summary['Num_Significant_States_FDR'].max()+1,
+                             step=1)
+                             )
+    ax2.tick_params(axis='y',
+                    labelcolor="green")
+
+    # Combine legends from both axes
+    lines_1, labels_1 = ax1.get_legend_handles_labels()
+    lines_2, labels_2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines_1 + lines_2, labels_1 + labels_2, fontsize=10)
+
+    # Save the combined plot
+    output_path_combined = os.path.join(base_folder, "Max_D_and_Significant_States_Plot.png")
+    plt.tight_layout()
+    plt.savefig(output_path_combined, dpi=300)
+    print(f"Combined plot saved to {output_path_combined}")
+
+    # Subplot 4: Significant states for each N_Microstate (FDR correction)
+    plt.figure(figsize=(10, 6))
+    for n_microstate in df["N_Microstate"].unique():
+        significant_states = df[(df["N_Microstate"] == n_microstate) & (df["Significant_FDR"])]
+        plt.scatter(
+            [n_microstate] * len(significant_states),
+            significant_states["Microstate"],
+            label=f"N_Microstate={n_microstate}" if len(significant_states) > 0 else "",
+            alpha=0.7
+        )
+    plt.xlabel("Number of Microstates (N_Microstate)", fontsize=12)
+    plt.ylabel("Microstate", fontsize=12)
+    plt.title("Significant States After FDR Correction", fontsize=14)
+    plt.grid(alpha=0.3)
+    output_path_significant_states_scatter = os.path.join(base_folder, "Significant_States_Scatter_Plot_D.png")
     plt.tight_layout()
     plt.savefig(output_path_significant_states_scatter, dpi=300)
     print(f"Significant states scatter plot saved to {output_path_significant_states_scatter}")
