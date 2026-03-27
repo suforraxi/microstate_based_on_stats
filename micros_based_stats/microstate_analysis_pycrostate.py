@@ -239,7 +239,7 @@ def backfit_peaks(clustering_in_dir=None,
     clustering = read_cluster(os.path.join(clustering_in_dir, 
                                            f"{n_microstates}_clustering.fif")
                                            )
-
+    n_clusters = clustering.n_clusters
     if not os.path.exists(out_dir):
         os.makedirs(out_dir, exist_ok=True)
 
@@ -251,8 +251,9 @@ def backfit_peaks(clustering_in_dir=None,
         peaks = data['peak_data']  # Assuming you saved the peak data as 'peak_data'
         raw = mne.io.RawArray(peaks, infoStub)
         segmentation = clustering.predict(raw,
+                                          factor=0,  # You can change this to the desired factor
                                           picks='all')
-
+        measures = segmentation.compute_parameters()
         unique, counts = np.unique(segmentation.labels, return_counts=True)
         label_range = range(-1, n_microstates)
         label_counts = {label: 0 for label in label_range}  # Initialize all labels with 0 visits
@@ -263,6 +264,8 @@ def backfit_peaks(clustering_in_dir=None,
                 'sub': os.path.basename(peak_f).split('_')[0],
                 'ses': os.path.basename(peak_f).split('_')[1],
                 'microstate': u,
+                'unlabeled': measures.get('unlabeled', 0),
+                'gev': measures.get(f'{u}_gev', np.nan),
                 'visits': label_counts[u]}
             df = pd.concat([df, pd.DataFrame([row])], ignore_index=True) 
        
@@ -358,7 +361,7 @@ def perm_test_microstate_visits(backfitted_peaks_in_dir=None,
             group1 = merged_df[merged_df['case_ctrl'] == 0]['visits_z']
             group2 = merged_df[merged_df['case_ctrl'] == 1]['visits_z']
             
-            t_stat, p_value = ttest_ind(group1, group2, equal_var=False)
+            #t_stat, p_value = ttest_ind(group1, group2, equal_var=False)
             
             res = permutation_test(
                 (group1, group2), 
@@ -369,7 +372,7 @@ def perm_test_microstate_visits(backfitted_peaks_in_dir=None,
             )
             
             
-            print(f"Microstate {u_m} - d-statistic: {t_stat}, p-value: {p_value}")  
+            print(f"Microstate {u_m} - d-statistic: {res.statistic}, p-value: {res.pvalue}")  
             all_test_res.append({
                 'Microstate': u_m,
                 'D-Statistic': np.abs(res.statistic),
@@ -394,6 +397,70 @@ def perm_test_microstate_visits(backfitted_peaks_in_dir=None,
     test_res_df.to_csv(os.path.join(save_path, 'final_d_results.csv'), index=False)
     print(f"Permutation test results saved to {save_path}")    
 
+def perm_paired_test_microstate_visits(backfitted_peaks_in_dir=None,
+                            base_out_dir=None,
+                            bids_root=None,
+                            n_perms=1000):
+    
+    # Load all backfitted peaks CSV files
+    backfit_f = glob.glob(os.path.join(backfitted_peaks_in_dir, 
+                                       '*_backfitted_peaks.csv'))
+    all_test_res = []
+    for f in backfit_f:
+        c_df = pd.read_csv(f)
+     
+        # Remove microstate '-1' from all subjects
+        c_df = c_df[c_df['microstate'] != -1]
+        c_df['visits_z'] = c_df.groupby(['sub', 'ses'])['visits'].transform(
+            lambda x: (x - x.mean()) / x.std() if x.std() != 0 else x - x.mean()
+        )
+        
+        u_micro = c_df['microstate'].unique()
+        for u_m in u_micro:
+            micro_df = c_df[c_df['microstate'] == u_m]
+            # Perform t-test or any other statistical test here using merged_df
+            micro_df['ses'] = micro_df['ses'].astype('category')
+            micro_df['microstate'] = micro_df['microstate'].astype('category')
+            micro_df['sub'] = micro_df['sub'].astype('category')
+                # Perform repeated measures ANOVA
+            
+            # Perform t-test or any other statistical test here using merged_df
+            group1 = micro_df[micro_df['ses'] == 'ses-01']['visits_z']
+            group2 = micro_df[micro_df['ses'] == 'ses-02']['visits_z']
+            
+            #t_stat, p_value = ttest_ind(group1, group2, equal_var=False)
+            
+            res = permutation_test(
+                (group1, group2), 
+                cohens_dz_statistic, 
+                permutation_type='samples', 
+                n_resamples=n_perms,
+                alternative='two-sided'
+            )
+            
+
+            print(f"Microstate {u_m} - D-statistic: {res.statistic}, p-value: {res.pvalue}")  
+            all_test_res.append({
+                'Microstate': u_m,
+                'D-Statistic': np.abs(res.statistic),
+                'p-value': res.pvalue,
+                'N_Microstate': len(u_micro)
+            })
+        
+    test_res_df = pd.DataFrame(all_test_res)
+    
+    # Group by 'N_Microstate', sort by 'D-Statistic', and relabel 'Microstate'
+    test_res_df = test_res_df.sort_values(['N_Microstate', 'D-Statistic'], ascending=[True, False])
+    test_res_df['unordered_Microstate'] = test_res_df['Microstate']
+    test_res_df['Microstate'] = test_res_df.groupby('N_Microstate').cumcount()
+     
+    save_path = os.path.join(base_out_dir, 'paired_permutation_test')
+    if not os.path.exists(save_path):
+        os.makedirs(save_path, exist_ok=True)
+    test_res_df.to_csv(os.path.join(save_path, 'final_d_results.csv'), index=False)
+    print(f"Permutation results saved to {save_path}")    
+
+
 def cohens_d_statistic(group1, group2):
     """
     Calculates Cohen's d for two independent groups.
@@ -409,6 +476,9 @@ def cohens_d_statistic(group1, group2):
     # so positive values mean group2 has more visits
     return (np.mean(group2) - np.mean(group1)) / s_pooled
 
+def cohens_dz_statistic(before, after):
+    diff = np.array(after) - np.array(before)
+    return np.mean(diff) / np.std(diff, ddof=1)
 def rm_anova_microstate_visits(backfitted_peaks_in_dir=None,
                                base_out_dir=None,
                                bids_root=None):
