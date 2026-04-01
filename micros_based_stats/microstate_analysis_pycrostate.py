@@ -18,6 +18,116 @@ from statsmodels.stats.anova import AnovaRM
 import matplotlib.pyplot as plt
 
 from scipy.stats import permutation_test
+import seaborn as sns
+
+
+def load_and_preprocess_continuous_data(
+    subject,
+    bids_root,
+    sessions,
+    l_freq=None,
+    h_freq=None,
+    downsample=None,
+    min_run_length=20480,
+    out_dir=None
+    ):  
+    """
+    Load and preprocess MEG/EEG data for a given subject and session.
+
+    Parameters:
+    - subject (str): Subject ID.
+    - bids_root (str): Path to BIDS root directory.
+    - sessions (list of str): List of session IDs.
+    - l_freq (float): Low cutoff frequency for bandpass filter.
+    - h_freq (float): High cutoff frequency for bandpass filter.
+    - downsample (int): Downsampling frequency in Hz.
+    - min_run_length (int): Minimum number of samples required for a run to be processed.
+
+    Returns:
+    - preprocessed_data (list of np.ndarray): List of preprocessed data arrays for each session.
+    """
+    for session in sessions:
+        ses_dir = os.path.join(bids_root, f'sub-{subject}', f'ses-{session}', 'meg')
+        fif_files = sorted(glob.glob(os.path.join(ses_dir, f'sub-{subject}_ses-{session}_task-rest_acq-*_run-*_meg.fif')))
+
+        # Group runs by acquisition
+        acquisitions = {}
+        for fif_file in fif_files:
+            acq = fif_file.split('_acq-')[1].split('_')[0]  # Extract acquisition label
+            if acq not in acquisitions:
+                acquisitions[acq] = []
+            acquisitions[acq].append(fif_file)
+
+        # Process only the first acquisition
+        if acquisitions:
+            first_acq = list(acquisitions.keys())[0]  # Get the first acquisition
+            acq_files = acquisitions[first_acq]  # Get the files for the first acquisition
+
+            raw_list = []
+
+        for fif_file in acq_files:
+            raw = mne.io.read_raw_fif(fif_file, preload=True, verbose=False)
+            if raw.n_times < min_run_length:
+                print(f"Skipping run {fif_file} (length: {raw.n_times} < {min_run_length})")
+                continue
+            else:
+                raw.crop(tmin=0, tmax=min_run_length/raw.info['sfreq'], include_tmax=True)  # Ensure we keep the full length of the run
+                # 1. Rename channels
+                rename_dict = {ch: f"roi_{i}" for i, ch in enumerate(raw.info["ch_names"])}
+                raw.rename_channels(rename_dict)
+                
+                # 2. Check run length
+                if raw.n_times < min_run_length:
+                    print(f"Skipping run {fif_file} (length: {raw.n_times} < {min_run_length})")
+                    continue
+                # Apply bandpass filter if specified
+                if l_freq is not None or h_freq is not None:
+                    raw.filter(l_freq=l_freq, h_freq=h_freq, verbose=False)
+                # 3. Apply downsampling
+                if downsample is not None:
+                    raw.resample(downsample, npad="auto")
+                
+                # 4. ADD CUSTOM ANNOTATION: Label this segment before merging
+                # This ensures you can find 'Run_0',
+                run_idx = int(raw.filenames[0].name.split('_run-')[1].split('_')[0])  # Extract run index from filename
+                annot = mne.Annotations(onset=[0], 
+                                        duration=[raw.times[-1]], 
+                                        description=[f'Run_{run_idx}'])
+                raw.set_annotations(annot)
+                
+                raw_list.append(raw)
+                break
+                
+
+        if raw_list:
+            # 5. Concatenate everything into one object
+            # MNE will automatically add 'BAD boundary' annotations between them
+            combined_raw = mne.concatenate_raws(raw_list)
+            
+            # 6. Compute Global Z-Score
+            # We get the data matrix (n_channels, n_times)
+            data = combined_raw.get_data()
+            
+            mean = np.mean(data, axis=1, keepdims=True)
+            std = np.std(data, axis=1, keepdims=True)
+            
+            # Apply Z-score (using np.abs as per your original logic)
+            data_z = np.abs((data - mean) / std)
+            
+            # Overwrite the data in the MNE object
+            combined_raw._data = data_z
+            
+            # 7. Save as a standard MNE .fif file
+            if out_dir is not None:
+                os.makedirs(out_dir, exist_ok=True)
+                save_fname = f"sub-{subject}_ses-{session}_task-combined_raw.fif"
+                save_path = os.path.join(out_dir, save_fname)
+                
+                # We use .save() because it preserves all MNE metadata/annotations
+                combined_raw.save(save_path, overwrite=True)
+                print(f"Concatenated Z-scored data saved to {save_path}")
+        else:
+            print(f"No valid runs found for subject {subject}, session {session}. Skipping.")
 
 
 
@@ -597,6 +707,7 @@ def backfit_data(clustering_f,
                         n_clusters, 
                         n_clusters)
                         )  # Initialize transition expected matrix
+    dist_durs_d = {} 
     for fidx, f in enumerate(file_list):
             # Backfit the group-level clustering
         print(f"Backfitting microstates for {f} using clustering from {clustering_f}")
@@ -632,9 +743,11 @@ def backfit_data(clustering_f,
             )
 
         
-        #dist = segmentation.compute_parameters(return_dist=True)
+        dist = segmentation.compute_parameters(return_dist=True)
+        for c in range(n_clusters):
+            dist_durs_d[f'{subject}_{session}_state_{c}'] = dist.get(f'{c}_dist_durs', np.array([]))
         # Save the distribution dictionary as a .npy file
-        #np.save(distribution_path, dist)
+       
     file_out = os.path.join(out_dir, 
                             'backfitted'+ f'_factor_{factor}_ws_{half_window_size}_{n_clusters}_microstates_measures.csv')
     measures_df.to_csv(file_out, index=False)
@@ -649,7 +762,11 @@ def backfit_data(clustering_f,
                                f'backfitted_factor_{factor}_ws_{half_window_size}_{n_clusters}_expected_transition_matrices.npy')
     np.save(tra_e_m_out, tra_e_m)
     print(f"Expected transition matrices saved to {tra_e_m_out}")
-
+    
+    dur_distribution_path = os.path.join(out_dir, 
+                                             f'backfitted_factor_{factor}_ws_{half_window_size}_{n_clusters}_duration_distribution.npy')
+    np.save(dur_distribution_path, dist_durs_d)
+    print(f"Duration distributions saved to {dur_distribution_path}")
 
 def corr_inv_dot(source_vector, target_map):
     """
@@ -679,15 +796,16 @@ def corr_inv_dot(source_vector, target_map):
     # Take the maximum correlation for polarity invariance
     return np.maximum(corr, corr_inv)
 
-"""
+
 def correlate_maps(maps_file_source,
-                   source_rois,
-                   in_folder,
-                   base_output_dir):
+                   source_idxs=[0,1],
+                   in_folder=None,
+                   base_output_dir=None
+                   ):
     
-    # read source maps and select ROIs
-    source_maps = read_cluster(maps_file_source)._cluster_centers
-    source_matrix = source_maps[source_rois, :]
+    # read source maps and select maps
+    source_maps = read_cluster(maps_file_source)._cluster_centers_
+    source_matrix = source_maps[source_idxs, :]
     # read all the clustering solutions
     all_files = sorted(
             glob.glob(
@@ -696,56 +814,51 @@ def correlate_maps(maps_file_source,
                     "**_clustering.fif",
                 ),
                 recursive=True
-            )
+            ),
+            key=lambda x: int(os.path.basename(x).split('_')[0])  # Sort numerically by the prefix before '_clustering.fif'
         )
-    
-    df_test = pd.read_csv(os.path.join(base_output_dir, 'ttest', 'significance_summary.csv'))
+
     all_corr_m = []
 
     for f in all_files:
         n_microstates = os.path.basename(os.path.dirname(f)).split("_")[0]
-        target_map = read_cluster(f)._cluster_centers
+        target_map = read_cluster(f)._cluster_centers_
         print(f"Loaded microstate_maps with shape: {target_map.shape}")
     
-        # Perform t-test for each microstate map against the source maps
-
-        if n_sig_states > 0:
-            n_sig_x_k[int(n_microstates)] = n_sig_states
-            sig_k.append(int(n_microstates))
-            print(f"Number of significant states after FDR correction: {n_sig_states}")
-            #Compute the correlation between source_maps and target_map
-            corr_m = np.zeros((source_matrix.shape[0], target_map.shape[0]))
-            for i in range(source_matrix.shape[0]):
-                source_vector = source_matrix[i, :]
-                corr_m[i, :] = corr_inv_dot(source_vector, target_map)
+        
+        #Compute the correlation between source_maps and target_map
+        corr_m = np.zeros((source_matrix.shape[0], target_map.shape[0]))
+        for i in range(source_matrix.shape[0]):
+            source_vector = source_matrix[i, :]
+            corr_m[i, :] = corr_inv_dot(source_vector, target_map)
             
             all_corr_m.append(corr_m)
 
             
-    max_n_hdm = max([m.shape[1] for m in all_corr_m])
-    m = np.zeros((max_n_hdm, len(all_corr_m)))
+    max_n_maps = max([m.shape[1] for m in all_corr_m])
+    m = np.zeros((max_n_maps, len(all_corr_m)))
     
-    source_map = [0, 1] # Assuming you want to use the first two source maps for correlation
-    for source_idx in source_map:
+    #source_map = [0, 1] # Assuming you want to use the first two source maps for correlation
+    for source_idx in source_idxs:
         for i in range(len(all_corr_m)):
-                n_hdm = all_corr_m[i].shape[1]
-                m[:n_hdm, i] = all_corr_m[i][source_idx, :n_hdm]
+                n_maps = all_corr_m[i].shape[1]
+                m[:n_maps, i] = all_corr_m[i][0, :n_maps]
         
-        heat_m_df = pd.DataFrame(m, columns=[f'K={k}' for k in sig_k])
+        heat_m_df = pd.DataFrame(m, columns=[f'K={k}' for k in range(2, max_n_maps+1)])
         # Reorder the columns in ascending order according to k
         heat_m_df = heat_m_df[sorted(heat_m_df.columns, key=lambda col: int(col.split('=')[1]))]
 
-        # Set the index names as 'HDM 0', 'HDM 1', etc.
-        heat_m_df.index = [f'HDM {i}' for i in range(heat_m_df.shape[0])]
+        # Set the index names as 'map 0', 'map 1', etc.
+        heat_m_df.index = [f'map {i}' for i in range(heat_m_df.shape[0])]
 
         # Create a mask for zeros to make them black and hide the numbers
         mask = (heat_m_df == 0)
 
-        plt.figure(figsize=(12, 10))  # Adjust the figure size as needed
+        plt.figure(figsize=(16, 12))  # Adjust the figure size as needed
         hm = sns.heatmap(heat_m_df,
                     cmap='viridis',
                     annot=True,
-                    annot_kws={"size": 12,
+                    annot_kws={"size": 10,
                                "weight": 'bold'
                         },
                     fmt=".2f",
@@ -767,7 +880,7 @@ def correlate_maps(maps_file_source,
 
         plt.title("")
         plt.xlabel("K solutions", fontsize=20)
-        plt.ylabel("HDM maps", fontsize=20)
+        plt.ylabel("Maps", fontsize=20)
         plt.xticks(rotation=45, fontsize=18)
         plt.yticks(rotation=0, fontsize=18)
         hm.figure.axes[-1].yaxis.label.set_size(18) 
@@ -776,57 +889,6 @@ def correlate_maps(maps_file_source,
         plt.savefig(save_path)
         plt.close()
         
-        # Create a new DataFrame for n_sig_x_k values
-        n_sig_x_k_df = pd.DataFrame.from_dict(n_sig_x_k, orient='index',
-                                              columns=['n_sig_states'])
-        n_sig_x_k_df.index.name = 'K'
-
-        # Order the rows based on K
-        n_sig_x_k_df = n_sig_x_k_df.sort_index()
-        #n_sig_x_k_df['K-clusters'] = n_sig_x_k_df.index  # Convert K to string for better display
-        #col_order = ['K-clusters','n_sig_states']
-        #n_sig_x_k_df = n_sig_x_k_df[col_order]
-        
-        # Update the heatmap for n_sig_x_k values
-        plt.figure(figsize=(6, 16))  # Keep the compact width
-        sns.heatmap(n_sig_x_k_df,
-                    cmap=sns.color_palette("coolwarm", as_cmap=True),
-                    annot=True,
-                    annot_kws={"size": 25, "weight": 'bold'},  # Adjust annotation font size and weight
-                    fmt="d",
-                    linewidths=0.5,
-                    linecolor='black',
-                    cbar=False,
-                    cbar_kws={'label': 'Number of Significant HDMs\nafter FDR Correction', 
-                              'ticks': []}
-                              )  # Remove ticks
-        plt.title("",
-                  fontsize=18,
-                  fontweight='bold',
-                  pad=10
-                  )
-        plt.xlabel("")  # Remove column labels
-        plt.xticks([])  # Hide x-axis ticks
-        plt.yticks(rotation=0, 
-                   fontsize=20,
-                   fontweight='bold')  # Rotate y-ticks to horizontal and adjust font size
-        plt.ylabel("",
-                   rotation=0,
-                   fontsize=22,
-                   fontweight='bold',
-                   loc='top'
-                   )
-
-        # Save the heatmap
-        save_path = os.path.join(base_output_dir, "n_sig_x_k_heatmap.png")
-        plt.savefig(save_path)
-        plt.close()
-        n_sig_x_k_df.to_csv(os.path.join(base_output_dir,
-                                         "n_sig_x_k.csv"),
-                            index=True
-                            )
-"""
-
 
 def apply_fdr_correction(group,  alpha = 0.05):
     """
@@ -1206,20 +1268,29 @@ def main_workflow():
     Returns:
     - None
     """
-
+    
     # bids root directory
-    bids_root = '/Volumes/CrucialX6/matteo/bids_als'  # Change this to your BIDS root directory
+    bids_root = '/Volumes/CrucialX6/matteo/bids_eloreta_pd_off'  # Change this to your BIDS root directory
     # Define sessions
     sessions = ['01']
-    n_subjects = 78# change according to your dataset
+    n_subjects = 77# change according to your dataset
     subject_list = [f"{i:02d}" for i in range(1, n_subjects+1)]  # Subject IDs from '01'
     #subject_list = ['01', '02', '26', '27']  # Add 'sub-' prefix to each subject ID
-    min_run_length = 2048  # Minimum number of time points required for a run to be included
+    min_run_length = 20480  # Minimum number of time points required for a run to be included
     l_freq = 2.0
     h_freq = 30.0
-    downsample = 256
+    downsample = None
+    n_peaks=250
+    peak_distance=10
+    smoothing_window=5
+    n_microstates = list(range(2, 31))
+    factor=5
+    half_window_size=5
+    min_segment_length=5
+    n_perms=10000
+
     # output directory
-    base_output_dir = '/Volumes/CrucialX6/matteo/bids_als/derivatives'  # Change this to your desired output directory'
+    base_output_dir = '/Volumes/CrucialX6/matteo/bids_eloreta_pd_off/derivatives/one_run_20s'  # Change this to your desired output directory'
     out_dir_preprocessed = os.path.join(base_output_dir, 'preprocessed_data/')
     out_dir_peaks = os.path.join(base_output_dir, 'gfp_peaks/')
     out_dir_combined_peaks = os.path.join(base_output_dir, 'combined_peaks/')
@@ -1227,7 +1298,7 @@ def main_workflow():
 
     if not os.path.exists(base_output_dir):
         os.makedirs(base_output_dir)
-   
+
     # Directory to save individual subject peaks
     if not os.path.exists(out_dir_preprocessed):
         os.makedirs(out_dir_preprocessed)
@@ -1238,44 +1309,45 @@ def main_workflow():
     if not os.path.exists(out_dir_clustering_ordered):
         os.makedirs(out_dir_clustering_ordered)
 
-    """
+    
     for subj in subject_list:
         # Step 1: Load and preprocess data
-        load_and_preprocess_data(subject=subj,
-                             bids_root=bids_root,
-                             sessions=sessions,
-                             l_freq=l_freq,
-                             h_freq=h_freq,
-                             downsample=downsample,
-                             min_run_length=min_run_length,
-                             out_dir=out_dir_preprocessed
-                             )
-    
+        load_and_preprocess_continuous_data(subject=subj,
+                                bids_root=bids_root,
+                                sessions=sessions,
+                                l_freq=l_freq,
+                                h_freq=h_freq,
+                                downsample=downsample,
+                                min_run_length=min_run_length,
+                                out_dir=out_dir_preprocessed
+                                )
+
     #Step 2: Extract GFP peaks
     extract_gfp_peaks(preprocessed_data_in_dir=out_dir_preprocessed,
-                      base_out= out_dir_peaks,
-                      n_peaks=1000,
-                      peak_distance=10,
-                      smoothing_window=5)
+                        base_out= out_dir_peaks,
+                        n_peaks=n_peaks,
+                        peak_distance=peak_distance,
+                        smoothing_window=smoothing_window)
 
-    
+
     combine_peaks(peaks_dir=out_dir_peaks, 
-                  base_out=base_output_dir)
+                    base_out=base_output_dir)
     
-    """
+
     # Step 3: Perform clustering
-    file_stub='/Volumes/CrucialX6/matteo/bids_ms/derivatives/preprocessed_data/sub-01_ses-01_task-combined_raw.fif'
+    file_stub='/Volumes/CrucialX6/matteo/bids_eloreta_pd_off/derivatives/one_run_20s/preprocessed_data/sub-01_ses-01_task-combined_raw.fif'
     raw = mne.io.read_raw_fif(file_stub, preload=True, verbose=False)
     infoStub = raw.info
-    n_microstates = list(range(2, 41))  # Change this to the desired number of microstates
+    # Change this to the desired number of microstates
     
     for n in n_microstates:
+        
         perform_clustering(peaks_in_dir=out_dir_combined_peaks,
                         base_out_dir=base_output_dir, 
                         n_microstates=n,
                         infoStub=infoStub
                         )
-
+    
         backfit_peaks(
             clustering_in_dir=os.path.join(base_output_dir, "clustering"),
             n_microstates=n,
@@ -1284,35 +1356,80 @@ def main_workflow():
             infoStub=infoStub
         )
     
-    backfitted_peaks_dir = os.path.join(base_output_dir, "backfitted_peaks")
-    ttest_microstate_visits(backfitted_peaks_in_dir=backfitted_peaks_dir,
-                            base_out_dir=base_output_dir,
-                            bids_root=bids_root )
+
     
-    test_file = os.path.join(base_output_dir, 'ttest', 'final_t_results.csv')
+    backfitted_peaks_dir = os.path.join(base_output_dir, "backfitted_peaks")
+    #ttest_microstate_visits(backfitted_peaks_in_dir=backfitted_peaks_dir,
+    #                        base_out_dir=base_output_dir,
+    #                        bids_root=bids_root )
+    
+    perm_test_microstate_visits(backfitted_peaks_in_dir=backfitted_peaks_dir,
+                                base_out_dir=base_output_dir,
+                                bids_root=bids_root,
+                                n_perms=n_perms
+                                )
+
+    #test_file = os.path.join(base_output_dir, 'ttest', 'final_t_results.csv')
+    #test_result_df = pd.read_csv(test_file)
+
+    test_file = os.path.join(base_output_dir,
+                            'permutation_test',
+                            'final_d_results.csv'
+                            )
     test_result_df = pd.read_csv(test_file)
-    # reorder microstates based on t-test results
+
+
+    # reorder microstates based on permutation test results
     reorder_microstates(clustering_in_dir=os.path.join(base_output_dir, "clustering"),
                         test_result_df=test_result_df,
-                        base_out_dir=os.path.join(base_output_dir, "clustering_ordered")
+                        base_out_dir=os.path.join(base_output_dir, "clustering_ordered_perm")
                         )
+
     for n in n_microstates:
-         backfit_peaks(
-            clustering_in_dir=os.path.join(base_output_dir, "clustering_ordered"),
+            backfit_peaks(
+            clustering_in_dir=os.path.join(base_output_dir, "clustering_ordered_perm"),
             n_microstates=n,
             gfp_peaks_in_dir=out_dir_peaks,
-            out_dir=os.path.join(base_output_dir, "backfitted_peaks_ordered"),
+            out_dir=os.path.join(base_output_dir, "backfitted_peaks_ordered_perm"),
             infoStub=infoStub
         )
-    
 
-    #reorder peak backfitting based on t-test results
 
-    plot_t_statistics(base_folder=os.path.join(base_output_dir, 
-                                              "ttest"),
-                                                alpha= 0.05
+    #reorder peak backfitting based on test results
+
+    #plot_t_statistics(base_folder=os.path.join(base_output_dir, 
+    #                                            "ttest"),
+    #                                            alpha= 0.05
+    #                                            )
+
+    plot_d_statistics(base_folder=os.path.join(base_output_dir,
+                                                "permutation_test"),
+                                                alpha=0.05
                                                 )
+    
+    # Step 4: Backfit microstates
+    #clustering_f = os.path.join(base_output_dir, "clustering_ordered", "37_clustering.fif")  # Change this to the desired clustering file
+
+
+    clustering_f = os.path.join(base_output_dir, "clustering_ordered_perm", "3_clustering.fif")  # Change this to the desired clustering file
+
+    out_backfit_dir = os.path.join(base_output_dir, "backfitted_ordered_perm_microstates")
+    if not os.path.exists(out_backfit_dir):
+        os.makedirs(out_backfit_dir)
+
+    measures_df = backfit_data(
+                                clustering_f,
+                                preprocessed_data=os.path.join(base_output_dir,
+                                                            "preprocessed_data"
+                                                            ),
+                                factor=factor,
+                                half_window_size=half_window_size,
+                                min_segment_length=min_segment_length,
+                                out_dir=out_backfit_dir,
+                                )
+
     print("Microstate analysis completed successfully.")
+
 
 if __name__ == "__main__":
     main_workflow()
